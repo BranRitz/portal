@@ -5,6 +5,8 @@ import json
 import re
 import logging
 import datetime
+from designsafe.apps.api import tasks
+from designsafe.apps.projects.models import Category
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,10 @@ class RelatedQuery(object):
 
     def __call__(self, agave_client):
         metas = agave_client.meta.listMetadata(q=json.dumps(self.query))
-        return  [self.rel_cls(**meta) for meta in metas]
+        ents = [self.rel_cls(**meta) for meta in metas]
+        for ent in ents:
+            ent.manager().set_client(agave_client)
+        return ents
 
     def add(self, uuid):
         self.uuids.append(uuid)
@@ -30,7 +35,6 @@ class RelatedQuery(object):
     @property
     def query(self):
         """JSON query to submit to agave metadata endpoint.
-
         This class represents both a forward-lookup field and a reverse-lookup field.
         There are two class attributes ``uuid`` and ``uuids`` (notice the 's').
         IF ``self.uuid`` has a valid value then it means this is a reverse-lookup field
@@ -39,7 +43,6 @@ class RelatedQuery(object):
         IF ``self.uuids`` has a valid value (it could be a string or an array of strings) means
         this is a forward-lookup field and we need to retrieve every object for every UUID
         in the ``self.uuids`` attribute: ``{"uuid": {"$in": ["UUID1", "UUID2"]}}``.
-
         ..todo:: This class should be separated in two classes, one for reverse-lookup fields
         and another one for forward-lookup fields. The reason why it was first implemented like this
         is because the implementation of a reverse-lookup field was not completely clear.
@@ -48,7 +51,7 @@ class RelatedQuery(object):
         if self.uuid:
             self._query['associationIds'] = self.uuid
         elif self.uuids is not None:
-            if isinstance(self.uuids, basestring):
+            if isinstance(self.uuids, str):
                 self.uuid = [self.uuids]
             elif len(self.uuids) == 0:
                 return []
@@ -125,7 +128,9 @@ class Manager(object):
             raise ValueError('No UUID or Project ID given')
 
         self.set_client(agave_client)
-        return self.model_cls(**meta)
+        ret = self.model_cls(**meta)
+        ret.manager().set_client(agave_client)
+        return ret
 
     def list(self, agave_client, association_id=None):
         if association_id is None:
@@ -200,7 +205,7 @@ class BaseModel(type):
             setattr(new_class, 'model_name', model_name)
 
         setattr(new_class, '_is_nested', attrs.pop('_is_nested', False))
-        for obj_name, obj in attrs.items():
+        for obj_name, obj in list(attrs.items()):
             new_class.add_to_class(obj_name, obj)
 
         new_class._prepare()
@@ -234,9 +239,8 @@ class BaseModel(type):
             raise ValueError("Model Manager must be a Manager class.")
 
 
-class Model(object):
+class Model(object, metaclass=BaseModel):
     """Metadata model"""
-    __metaclass__ = BaseModel
 
     def __init__(self, **kwargs):
         if not self._is_nested:
@@ -352,7 +356,7 @@ class Model(object):
         if not val['permission'].get('read', False) and \
             not val['permission'].get('write', False) and \
             not val['permission'].get('execute', False):
-            pems = filter(lambda x: x['username'] == val['username'], pems)
+            pems = [x for x in pems if x['username'] == val['username']]
         
         else:
             pems.append(val)
@@ -361,7 +365,7 @@ class Model(object):
 
     def permission(self, username):
         pems = self.permission
-        pem = filter(lambda x: x['username'] == username, pems)
+        pem = [x for x in pems if x['username'] == username]
         if len(pem):
             return pem[0]['permission']
         else:
@@ -432,7 +436,9 @@ class Model(object):
 
         if ('lastUpdated' in dict_obj and isinstance(dict_obj['lastUpdated'], datetime.datetime)):
             dict_obj['lastUpdated'] = dict_obj['lastUpdated'].isoformat()
-
+        if self.uuid:
+            category, _ = Category.objects.get_or_create(uuid=self.uuid)
+            dict_obj['_ui'] = category.to_dict()
         return dict_obj
 
     def save(self, agave_client):
@@ -447,12 +453,14 @@ class Model(object):
         else:
             logger.debug('Updating Metadata: %s, with: %s', self.uuid, body)
             ret = agave_client.meta.updateMetadata(uuid=self.uuid, body=body)
+            tasks.index_or_update_project.apply_async(args=[self.uuid], queue='api')
+        
         self.update(**ret)
         return ret
 
     def associate(self, value):
         _aids = self.association_ids[:]
-        if isinstance(value, basestring):
+        if isinstance(value, str):
             _aids.append(value)
         else:
             _aids += value

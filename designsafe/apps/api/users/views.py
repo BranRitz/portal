@@ -1,4 +1,5 @@
 import logging
+import json
 from designsafe.apps.api.mixins import SecureMixin
 from designsafe.apps.api.users import utils as users_utils
 from django.contrib.auth import get_user_model
@@ -8,6 +9,7 @@ from django.views.generic.base import View
 from django.core.exceptions import ObjectDoesNotExist
 from pytas.http import TASClient
 
+from designsafe.apps.data.models.elasticsearch import IndexedFile
 from elasticsearch_dsl import Q, Search
 
 logger = logging.getLogger(__name__)
@@ -17,8 +19,8 @@ class UsageView(SecureMixin, View):
 
     def get(self, request):
         current_user = request.user
-        q = Search(index="designsafe")\
-                .query('bool', must=[Q("match", **{"path._path": current_user.username})])\
+        q = IndexedFile.search()\
+                .query('bool', must=[Q("prefix", **{"path._exact": '/' + current_user.username})])\
                 .extra(size=0)
         q.aggs.metric('total_storage_bytes', 'sum', field="length")
         result = q.execute()
@@ -52,20 +54,21 @@ class SearchView(SecureMixin, View):
 
     def get(self, request):
         resp_fields = ['first_name', 'last_name', 'email', 'username']
-
         model = get_user_model()
         q = request.GET.get('username')
         if q:
             try:
                 user = model.objects.get(username=q)
             except ObjectDoesNotExist as err:
-                return HttpResponseNotFound();
+                return HttpResponseNotFound()
             res_dict = {
                 'first_name': user.first_name,
                 'last_name': user.last_name,
                 'email': user.email,
                 'username': user.username,
             }
+            if(user.profile.orcid_id):
+                res_dict['orcid_id'] = user.profile.orcid_id
             try:
                 user_tas = TASClient().get_user(username=q)
                 res_dict['profile'] = {
@@ -93,3 +96,33 @@ class SearchView(SecureMixin, View):
             return JsonResponse(resp, safe=False)
         else:
             return HttpResponseNotFound()
+
+
+class PublicView(View):
+
+    def get(self, request):
+        model = get_user_model()
+        nl = json.loads(request.GET.get('usernames'))
+
+        res_list = []
+
+        try:
+            users = []
+            for username in nl:
+                try:
+                    users.append(model.objects.get(username=username))
+                except model.DoesNotExist:
+                    continue
+
+            for user in users:
+                data = {
+                    'fname': user.first_name,
+                    'lname': user.last_name,
+                    'username': user.username,
+                }
+                res_list.append(data)
+        except ObjectDoesNotExist as err:
+            return HttpResponseNotFound()
+
+        res_dict = {"userData": res_list}
+        return JsonResponse(res_dict)

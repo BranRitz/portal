@@ -1,12 +1,18 @@
 # ignore intellij IDE things
 .idea/
 
+i# ignore vsCode things
+settings.json
+
 # OsX DS_Store nonsense
 .DS_Store
 
 # don't track webpack's bundles
 designsafe/apps/rapid/static/designsafe/apps/rapid/build/bundle.*
-designsafe/static/styles/base.*
+designsafe/apps/geo/static/designsafe/apps/geo/build/bundle.*
+designsafe/static/build/
+# designsafe/static/styles/base.*
+/static
 
 # ignore the populated environment file so as not to commit secrets!
 designsafe.env
@@ -16,9 +22,9 @@ rabbitmq.conf
 mysql.cnf
 
 # local config files
-conf/elasticsearch/elasticsearch.yml
 conf/elasticsearch/logging.yml
 conf/redis.conf
+settings.json
 
 # don't commit certs
 certs/
@@ -62,6 +68,7 @@ htmlcov/
 .tox/
 .coverage
 .coverage.*
+coverage/
 .cache
 nosetests.xml
 coverage.xml
@@ -72,7 +79,11 @@ coverage.xml
 docs/_build/
 .docs/build
 target/
+venv/
 
 # ignore Google Drive API secrets
 *secrets.json
 *secrets.py
+
+# vscode
+.vscode/

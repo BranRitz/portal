@@ -1,10 +1,12 @@
-import six
+"""Reindex command"""
 import json
 import logging
+import six
 from django.core.management.base import BaseCommand, CommandError
 from django.conf import settings
 import elasticsearch
-from elasticsearch import TransportError, ConnectionTimeout
+from elasticsearch import TransportError
+
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,9 @@ class Command(BaseCommand):
                             "You can use http(s)?://<url>:<port> or a 'ES_CONNECTIONS' "\
                             "key (e.g. 'default' or 'staging')")
         parser.add_argument('--timeout', help="Reindexing request timeout", type=int)
+        parser.add_argument('--sample', help="set to True to take a random sample", default=False, type=bool)
+        parser.add_argument('--size', help="size of the sample (default=100000)", default=100000, type=int)
+        parser.add_argument('--seed', help="seed for randomization", default="tacc rulz ok", type=str)
 
     def remove_fielddata(self, dict_obj, lvl=1):
         for key, val in six.iteritems(dict_obj):
@@ -43,9 +48,12 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         from_index = options.get('from_index')
         to_index = options.get('to_index')
-        doc_type = options.get('doc-type')
-        all_docs = options.get('all-docs')
+        doc_type = options.get('doc_type')
+        all_docs = options.get('all_docs')
         remote_host = options.get('remote_host')
+        sample = options.get('sample')
+        size = options.get('size')
+        seed = options.get('seed')
 
         body = {
             "source": {
@@ -56,13 +64,29 @@ class Command(BaseCommand):
             }
         }
 
+        if sample:
+            body["size"] = size
+
+            body["source"]["query"] = {
+                "function_score": {
+                    "query": {
+                        "match_all": {}
+                    },
+                    "functions": [{
+                        "random_score": {"seed": seed}
+                    }]
+                }
+            }
+
+
         if remote_host:
             if remote_host.startswith('http://') \
                 or remote_host.startswith('https://'):
                 hosts = [remote_host]
+                body['source']['remote'] = {'host': '{}:9200'.format(hosts[0])}
             else:
                 hosts = settings.ES_CONNECTIONS.get(remote_host, {}).get('hosts', [])
-            body['source']['remote'] = {'host': 'http://{}:9200'.format(hosts[0])}
+                body['source']['remote'] = {'host': 'http://{}:9200'.format(hosts[0])}
         else:
             hosts = settings.ES_CONNECTIONS[settings.DESIGNSAFE_ENVIRONMENT]['hosts']
 
@@ -70,9 +94,9 @@ class Command(BaseCommand):
             raise CommandError('No valid remote hosts given. Remote host value given: {}'.\
                 format(remote_host))
 
-        if not all_docs and doc_type:
+        if doc_type:
             body['source']['type'] = doc_type
-
+            self.stdout.write('doc_type: %s' % doc_type)
         es_local = elasticsearch.Elasticsearch(
             settings.ES_CONNECTIONS[settings.DESIGNSAFE_ENVIRONMENT]['hosts'],
             request_timeout=120)

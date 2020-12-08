@@ -1,9 +1,7 @@
-(function(window, angular, $, _) {
+import _ from 'underscore';
 
-  var mod = angular.module('designsafe');
-
-
-  mod.filter('dsFileUrl', [function() {
+export function dsFileUrl() {
+    'ngInject';
     return function(file, baseHref) {
       if (typeof file === 'undefined'){
         return "";
@@ -31,9 +29,9 @@
 
       return path;
     };
-  }]);
+  }
 
-  mod.filter('dsFileDisplayName', [function() {
+  export function dsFileDisplayName() {
     return function(file){
       var displayName = file.name;
       if (typeof file.metadata === 'undefined'){
@@ -47,9 +45,9 @@
       }
       return displayName;
     };
-  }]);
+  }
 
-  mod.filter('dsListingDisplayName', [function(){
+  export function dsListingDisplayName(){
     return function(item){
       if (typeof item.metadata === 'undefined'){
         return item.name;
@@ -66,9 +64,9 @@
         return item.name;
       }
     };
-  }]);
-
-  mod.filter('dsTrailDisplayName', [function(){
+  }
+  
+  export function dsTrailDisplayName(){
     return function(item){
       if (typeof item.project === 'undefined'){
         return item.name;
@@ -83,9 +81,9 @@
         return item.name;
       }
     };
-  }]);
+  }
 
-  mod.filter('dsSharedFilePath', [function(){
+  export function dsSharedFilePath(){
     return function(path, listing){
       if (typeof listing === 'undefined' ||
           !listing || listing === null){
@@ -105,6 +103,4 @@
       var retPath = path.replace(re, '');
       return retPath;
     };
-  }]);
-
-})(window, angular, jQuery, _);
+  }

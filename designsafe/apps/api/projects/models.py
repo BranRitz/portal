@@ -51,15 +51,35 @@ class Project(BaseMetadataResource):
         query = {
             'name': Project.NAME
         }
-        records = agave_client.meta.listMetadata(q=json.dumps(query), privileged=False)
+        records = agave_client.meta.listMetadata(q=json.dumps(
+            query), privileged=False, offset=kwargs.get('offset', 0), limit=kwargs.get('limit',100))
         return [cls(agave_client=agave_client, **dict(r, **kwargs)) for r in records]
+
+    @classmethod
+    def ES_search(cls, agave_client, query_string, **kwargs):
+        """
+        Query Elasticsearch for projects matching a query string. Query the 
+        returned UUIDs with the user's client so that we return only projects
+        that the user has permission to view.
+        """
+        from designsafe.apps.projects.models.elasticsearch import IndexedProject
+
+        records = IndexedProject.search().query('query_string', query=query_string, default_operator='and')
+        records = records.extra(from_=kwargs.get('offset', 0), size=kwargs.get('limit',100))
+        records = records.execute()
+        record_uuids = list(map(lambda hit: hit.uuid, records))
+        result_query = {"uuid": {"$in": record_uuids}}
+        meta_records = agave_client.meta.listMetadata(q=json.dumps(
+            result_query), privileged=False)
+
+        return [cls(agave_client=agave_client, **dict(r, **kwargs)) for r in meta_records]
 
     @classmethod
     def search(cls, q, agave_client):
         """
         Search projects
         """
-        if isinstance(q, basestring):
+        if isinstance(q, str):
             query = q
         else:
             query = json.dumps(q)

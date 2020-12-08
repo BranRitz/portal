@@ -12,6 +12,7 @@ from designsafe.apps.accounts import forms, integrations
 from designsafe.apps.accounts.models import (NEESUser, DesignSafeProfile,
                                              NotificationPreferences)
 from designsafe.apps.auth.tasks import check_or_create_agave_home_dir
+from designsafe.apps.accounts.tasks import create_report
 from pytas.http import TASClient
 from pytas.models import User as TASUser
 import logging
@@ -34,6 +35,11 @@ def manage_profile(request):
     """
     django_user = request.user
     user_profile = TASUser(username=request.user.username)
+    try:
+        ds_profile = DesignSafeProfile.objects.get(user__id=django_user.id)
+    except DesignSafeProfile.DoesNotExist:
+        logout(request)
+        return HttpResponseRedirect(reverse('designsafe_auth:login'))
 
     try:
         demographics = django_user.profile
@@ -44,40 +50,11 @@ def manage_profile(request):
     context = {
         'title': 'Account Profile',
         'profile': user_profile,
-        'demographics': demographics
+        'ds_profile': ds_profile,
+        'demographics': demographics,
+        'user': django_user,
     }
     return render(request, 'designsafe/apps/accounts/profile.html', context)
-
-
-@login_required
-def manage_pro_profile(request):
-    user = request.user
-    try:
-        ds_profile = DesignSafeProfile.objects.get(user__id=user.id)
-    except DesignSafeProfile.DoesNotExist:
-        logout(request)
-        return HttpResponseRedirect(reverse('designsafe_auth:login'))
-    context = {
-        'title': 'Professional Profile',
-        'user': user,
-        'profile': ds_profile
-    }
-    return render(request, 'designsafe/apps/accounts/professional_profile.html', context)
-
-
-@login_required
-def pro_profile_edit(request):
-    context = {}
-    user = request.user
-    ds_profile = DesignSafeProfile.objects.get(user_id=user.id)
-    form = forms.ProfessionalProfileForm(request.POST or None, instance=ds_profile)
-    if request.method == 'POST':
-        if form.is_valid():
-            form.save()
-            return HttpResponseRedirect(reverse('designsafe_accounts:manage_pro_profile'))
-    context["form"] = form
-    return render(request, 'designsafe/apps/accounts/professional_profile_edit.html', context)
-
 
 @login_required
 def manage_authentication(request):
@@ -348,10 +325,22 @@ def profile_edit(request):
     user = request.user
     tas_user = tas.get_user(username=user.username)
 
+    user = request.user
+    ds_profile = DesignSafeProfile.objects.get(user_id=user.id)
+    pro_form = forms.ProfessionalProfileForm(request.POST or None, instance=ds_profile)
+
     if request.method == 'POST':
         form = forms.UserProfileForm(request.POST, initial=tas_user)
-        if form.is_valid():
+        if form.is_valid() and pro_form.is_valid():
+            existing_user = (tas.get_user(email=form.cleaned_data['email']))
+            if existing_user and (existing_user['email'] != tas_user['email']):
+                messages.error(request, 'The submitted email already exists! Your email has not been updated!')
+                return HttpResponseRedirect(reverse('designsafe_accounts:profile_edit'))
+
+            pro_form.save()
+
             data = form.cleaned_data
+            pro_data = pro_form.cleaned_data
             # punt on PI Eligibility for now
             data['piEligibility'] = tas_user['piEligibility']
 
@@ -365,15 +354,27 @@ def profile_edit(request):
                 ds_profile = user.profile
                 ds_profile.ethnicity = data['ethnicity']
                 ds_profile.gender = data['gender']
-                ds_profile.save()
+                ds_profile.bio = pro_data['bio']
+                ds_profile.website = pro_data['website']
+                ds_profile.orcid_id = pro_data['orcid_id']
+                ds_profile.professional_level = pro_data['professional_level']
+                ds_profile.nh_interests_primary = pro_data['nh_interests_primary']
+
             except ObjectDoesNotExist as e:
                 logger.info('exception e: {} {}'.format(type(e), e ))
                 ds_profile = DesignSafeProfile(
                     user=user,
                     ethnicity=data['ethnicity'],
-                    gender=data['gender']
+                    gender=data['gender'],
+                    bio=pro_data['bio'],
+                    website=pro_data['website'],
+                    orcid_id=pro_data['orcid_id'],
+                    professional_level=pro_data['professional_level'],
+                    nh_interests_primary=pro_data['nh_interests_primary']
                     )
-                ds_profile.save()
+
+            ds_profile.update_required = False
+            ds_profile.save()
 
             return HttpResponseRedirect(reverse('designsafe_accounts:manage_profile'))
     else:
@@ -388,6 +389,7 @@ def profile_edit(request):
     context = {
         'title': 'Account Profile',
         'form': form,
+        'pro_form': pro_form
     }
     return render(request, 'designsafe/apps/accounts/profile_edit.html', context)
 
@@ -498,13 +500,9 @@ def email_confirmation(request, code=None):
                 tas = TASClient()
                 user = tas.get_user(username=username)
                 if tas.verify_user(user['id'], code, password=password):
-                    check_or_create_agave_home_dir.apply_async(args=(user["username"],))
-
-                    messages.success(request,
-                                     'Congratulations, your account has been activated! '
-                                     'You can now log in to DesignSafe.')
-                    return HttpResponseRedirect(
-                        reverse('designsafe_accounts:manage_profile'))
+                    logger.info('TAS Account activation succeeded.')
+                    check_or_create_agave_home_dir.apply(args=(user["username"],))
+                    return HttpResponseRedirect(reverse('designsafe_accounts:manage_profile'))
                 else:
                     messages.error(request,
                                    'We were unable to activate your account. Please try '
@@ -541,14 +539,36 @@ def departments_json(request):
 @permission_required('designsafe_accounts.view_notification_subscribers', raise_exception=True)
 def mailing_list_subscription(request, list_name):
     subscribers = ['"Name","Email"']
+
     try:
         su = get_user_model().objects.filter(
             Q(notification_preferences__isnull=True) |
             Q(**{"notification_preferences__{}".format(list_name): True}))
-        subscribers += list('"{0}","{1}"'.format(u.get_full_name().encode('utf-8'), u.email.encode('utf-8')) for u in su)
+        subscribers += list('"{0}","{1}"'.format(u.get_full_name(),
+        u.email) for u in su)
+
     except TypeError as e:
         logger.warning('Invalid list name: {}'.format(list_name))
     return HttpResponse('\n'.join(subscribers), content_type='text/csv')
+
+
+@permission_required('designsafe_accounts.view_notification_subscribers', raise_exception=True)
+def user_report(request, list_name):
+
+    django_user = request.user
+
+    create_report.apply_async(
+                args=(
+                    (django_user.username, list_name)
+                )
+            )
+
+    context = {
+        'title': 'Generating Report',
+    }
+
+    return render(request, 'designsafe/apps/accounts/generating_user_report.html', context)
+
 
 def termsandconditions(request):
     context = {

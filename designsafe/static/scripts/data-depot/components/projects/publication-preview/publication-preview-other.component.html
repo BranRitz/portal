@@ -1,0 +1,160 @@
+<div style="background:white;">
+    <!-- Project Header Start -->
+    <div ng-if="!$ctrl.ui.loading">
+        <div class="prj-head-container">
+            <span class="prj-head-title">
+                {{$ctrl.browser.project.value.projectId}} | <strong>{{ $ctrl.browser.project.value.title }}</strong>
+                <a class="prj-head-edit" ng-click="$ctrl.editProject($event)" ng-if="!$ctrl.readOnly"><strong>Edit Project</strong></a>
+            </span>
+            <span class="prj-head-download">
+                <a class="curation-download" ng-click="$ctrl.download()" ng-if="$ctrl.readOnly"> <strong>Download Dataset</strong></a>
+            </span>
+        </div>
+        <table style="table-layout: fixed; width: 100%; margin-top: 10px; margin-bottom: 10px;">
+            <colgroup>
+                <col style="width: 15%">
+                <col style="width: 84%">
+            </colgroup>
+            <tr class="prj-row">
+                <td ng-if="!$ctrl.readOnly">PI</td>
+                <td class="prj-data" ng-if="!$ctrl.readOnly">
+                    <ds-user-list usernames="[$ctrl.browser.project.value.pi]"></ds-user-list>
+                </td>
+                <td ng-if="$ctrl.readOnly">Author</td>
+                <td ng-if="$ctrl.readOnly">
+                    <strong>
+                        <ds-user-list usernames="$ctrl.browser.publication.project.value.teamOrder" format="other"></ds-user-list>
+                    </strong>
+                </td>
+            </tr>
+            <tr ng-if="$ctrl.browser.project.value.coPis.length && !$ctrl.readOnly">
+                <td>CoPIs</td>
+                <td class="prj-data">
+                    <ds-user-list usernames="$ctrl.browser.project.value.coPis"></ds-user-list>
+                </td>
+            </tr>
+            <tr class="prj-row" ng-hide="$ctrl.browser.project.value.projectType === 'other' && $ctrl.browser.project.value.dataType">
+                <td>Project Type</td>
+                <td class="prj-data">{{ $ctrl.browser.project.value.projectType.replace('_', ' ') }}</td>
+            </tr>
+            <tr class="prj-row" ng-if="$ctrl.browser.project.value.projectType === 'other' && $ctrl.browser.project.value.dataType">
+                <td>Data Type</td>
+                <td class="prj-data">{{ $ctrl.browser.project.value.dataType }}</td>
+            </tr>
+            <tr ng-repeat="award in $ctrl.browser.project.value.awardNumber | orderBy:'order' track by $index"
+                ng-if="!$ctrl.readOnly">
+                <td ng-if="$first">Awards</td>
+                <td ng-if="!$first"></td>
+                <td><strong>{{ award.name }} - {{ award.number }}</strong></td>
+            </tr>
+            <tr ng-repeat="award in $ctrl.browser.project.value.awardNumbers | orderBy:'order' track by $index"
+                ng-if="$ctrl.readOnly">
+                <td ng-if="$first">Awards</td>
+                <td ng-if="!$first"></td>
+                <td><strong>{{ award.name }} - {{ award.number }}</strong></td>
+            </tr>
+            <tr ng-if="!$ctrl.relatedWorkEmpty()"
+                ng-repeat="work in $ctrl.browser.project.value.associatedProjects | orderBy:'order' track by $index"
+            >
+                <td ng-if="$first">Related Work</td>
+                <td ng-if="!$first"></td>
+                <td><strong><a href="{{ work.href }}" rel="noopener noreferrer" target=”_blank”>{{ work.title }}</a></strong></td>
+            </tr>
+            <tr class="prj-row">
+                <td ng-if="$ctrl.browser.project.value.keywords">Keywords</td>
+                <td class="prj-data">{{ $ctrl.browser.project.value.keywords }}</td>
+            </tr>
+            <tr class="prj-row" ng-if="$ctrl.readOnly">
+                <td ng-if="$ctrl.browser.project.value.keywords">Date of Publication</td>
+                <td class="prj-data">{{ $ctrl.browser.publication.created | date:'MM-dd-yyyy' }}</td>
+            </tr>
+            <tr class="prj-row" ng-if="$ctrl.readOnly">
+                <td>
+                    <span>DOI</span>
+                    <button class="btn btn-info btn-sm btn-cite" data-ng-click="$ctrl.showCitation()">
+                        Citation
+                    </button>
+                </td>
+                <td>
+                    <strong>{{ $ctrl.browser.publication.project.value.dois[0] }}</strong>
+                </td>
+            </tr>
+            <tr class="prj-row" ng-if="$ctrl.readOnly">
+                <td ng-if="$ctrl.browser.project.value.keywords">License(s)</td>
+                <td class="prj-data">
+                    <strong>
+                        <div data-ng-if="$ctrl.browser.publication.licenses.datasets">
+                            {{ $ctrl.browser.publication.licenses.datasets }}
+                        </div>
+                        <div data-ng-if="$ctrl.browser.publication.licenses.works">
+                            {{ $ctrl.browser.publication.licenses.works }}
+                        </div>
+                        <div data-ng-if="$ctrl.browser.publication.licenses.software">
+                            {{ $ctrl.browser.publication.licenses.software }}
+                        </div>
+                    </strong>
+                </td>
+            </tr>
+        </table>
+        <div ng-if="$ctrl.browser.project.value.description">
+            <p>{{ $ctrl.browser.project.value.description }}</p>
+        </div>
+    </div>
+    <!-- Project Header End -->
+    <table class="tg" style="table-layout: fixed; width: 100%;"
+           data-ng-if="!$ctrl.readOnly && !$ctrl.ui.loading">
+        <colgroup>
+            <col style="width: 46%">
+            <col style="width: 50%">
+        </colgroup>
+        <tr>
+            <td class="tg-0lax">
+                <button class="btn btn-project-l grayed-out"
+                        ng-click="$ctrl.goWork()"
+                >
+                    Working Directory
+                </button>
+                <button class="btn btn-project-m grayed-out"
+                        ng-click="$ctrl.goCuration()"
+                >
+                    Curation Directory
+                </button>
+                <button class="btn btn-project-r"
+                        ng-click="publicationPreview()"
+                >
+                    Publication Preview
+                </button>
+            </td>
+            <td class="tg-0lax">
+                <div class="btn-group pull-right" role="group" aria-label="Publish buttons">
+                    <button class="btn btn-add" ng-click="$ctrl.prepareModal()">
+                        Prepare to Publish <i class="fa fa-arrow-right"></i>
+                    </button>
+                </div>
+            </td>
+        </tr>
+    </table>
+    <br>
+    <div ng-if="!$ctrl.readOnly">
+        <p>
+            <h3 style="text-align: center;">You will select the data to be published in the next step</h3>
+        </p>
+    </div>
+    <div ng-if="$ctrl.readOnly">
+        <div ng-show="$ctrl.ui.loading">
+            <h3 class="text-center">
+                <i class="fa fa-spinner fa-spin"></i> Loading...
+            </h3>
+        </div>
+        <div ng-if="$ctrl.ui.fileNav">
+            <breadcrumb
+            path="$ctrl.breadcrumbParams.path"
+            system="$ctrl.FileListingService.listings.main.params.path"
+            on-browse="$ctrl.onBrowse(file)"
+            custom-root="$ctrl.breadcrumbParams.root"
+            skip-root="$ctrl.breadcrumbParams.skipRoot"
+        ></breadcrumb>
+            <files-listing listing="$ctrl.FileListingService.listings.main" on-browse="$ctrl.onBrowse(file)" show-tags="true" show-select="true"></files-listing>
+        </div>
+    </div>
+</div>

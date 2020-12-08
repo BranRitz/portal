@@ -1,9 +1,8 @@
-(function(angular, $){
-  "use strict";
+import _ from 'underscore';
+import { $q } from '@uirouter/core';
 
-  var mod = angular.module('designsafe');
-
-  mod.directive('fileModel', ['$parse',function ($parse) {
+export function fileModel($parse) {
+    'ngInject';
     return {
       restrict: 'A',
       link: function(scope, element, attrs) {
@@ -21,9 +20,22 @@
         });
       }
     };
-  }]);
+  };
 
-  mod.directive('spinnerOnLoad', function () {
+export function iframeOnload() {
+return {
+  scope: {
+    callBack: '&iframeOnload',
+  },
+  link: function(scope, element, attrs) {
+    element.on('load', function() {
+      scope.callBack();
+    });
+  },
+  };
+}
+
+  export function spinnerOnLoad() {
     return {
       restrict: 'A',
       link: function (scope, element) {
@@ -37,9 +49,10 @@
       }
     };
 
-  });
+  }
 
-  mod.directive('httpSrc', ['$http', function ($http) {
+export function httpSrc($http) {
+    'ngInject';
    return {
       restrict: 'A',
       link: function (scope, element, attrs) {
@@ -48,7 +61,7 @@
         };
 
         $http.get(attrs.httpSrc, conf)
-          .success(function(data) {
+          .then(function(data) {
             var arr = new Uint8Array(data);
 
             var raw = '';
@@ -60,15 +73,13 @@
 
             var b64 = btoa(raw);
             attrs.$set('src', "data:image/jpeg;base64," + b64);
-          })
-          .error(function (error) {
-            console.log(error);
-          });
+        }, function (error) {
+        });
       }
     };
-  }]);
+  }
 
-  mod.directive('accessfiles', function() {
+ export function accessfiles() {
     return {
       scope: {
         accessfiles: '='
@@ -82,9 +93,9 @@
         });
       }
     };
-  });
+  }
 
-  mod.directive('selectOnFocus', function() {
+  export function selectOnFocus() {
     return {
       restrict: 'A',
       link: function(scope, element, attrs) {
@@ -93,9 +104,9 @@
         });
       }
     };
-  });
+  }
 
-  mod.directive('dsDataDraggable', function() {
+export function dsDataDraggable() {
     function dragStart(e) {
       var ele = this;
       ele.style.opacity = '0.4';
@@ -125,9 +136,9 @@
       el.addEventListener('drop', onDrop);
     }
     return dataDraggable;
-  });
+  }
 
-  mod.directive('dsDraggable', function() {
+export function dsDraggable() {
 
     return {
       restrict: 'A',
@@ -193,47 +204,54 @@
         });
       }
     };
-  });
+  }
 
-  mod.directive('dsInfiniteScroll', function(){
-    return {
-      restrict: 'A',
-      scope: {
-        scrollBottom: '&',
-        scrollTop: '&',
-        bottomHeight: '='
-      },
-      link: function(scope, element, attrs){
-        var el = element[0];
-        el.addEventListener('scroll', function(e){
-          var pos = el.offsetHeight + el.scrollTop;
-          if (pos >= el.scrollHeight - scope.bottomHeight){
-            scope.scrollBottom(el, pos);
+export function dsInfiniteScroll(){
+  return {
+    restrict: 'A',
+    scope: {
+      scrollBottom: '&',
+      scrollTop: '&',
+      bottomHeight: '='
+    },
+    link: function(scope, element, attrs){
+      var el = element[0];
+      el.addEventListener('scroll', function(e){
+        var pos = el.offsetHeight + el.scrollTop;
+        if (pos >= el.scrollHeight - scope.bottomHeight){
+          scope.scrollBottom(el, pos);
+          scope.$apply()
+        }
+        if (pos <= el.offsetHeight){
+          if (scope.scrollTop){
+            scope.scrollTop(el, pos);
+            scope.$apply();
           }
-          if (pos <= el.offsetHeight){
-            if (scope.scrollTop){
-              scope.scrollTop(el, pos);
-            }
-          }
-        });
-      }
-    };
-  });
+        }
+      });
+    }
+  };
+}
 
-  mod.directive('dsUser', ['UserService', function(UserService) {
-    return {
-      restrict: 'EA',
-      scope: {
-        username: '=',
-        format: '@'
-      },
-      link: function(scope, element) {
+export function dsUser(UserService) {
+  'ngInject';
+  return {
+    restrict: 'EA',
+    scope: {
+      username: '=',
+      format: '@'
+    },
+    link: function(scope, element) {
+      scope.$watch('username', function() {
         var format = scope.format || 'name';
 
-        UserService.get(scope.username).then(function (user) {
+        UserService.get(scope.username).then((user) => {
           switch (format) {
+            case 'hname':
+              element.text(user.last_name + ', ' + user.first_name[0] + '.');
+              break;
             case 'lname':
-              element.text(user.last_name + ', ' + user.first_name + ';');
+              element.text(user.last_name + ', ' + user.first_name);
               break;
             case 'name':
               element.text(user.first_name + ' ' + user.last_name);
@@ -254,11 +272,145 @@
               element.text(user.username);
           }
         });
-      }
-    };
-  }]);
+      });
+    }
+  };
+}
 
-  mod.directive('dsFixTop', function ($window) {
+export function dsUserList(UserService) {
+  'ngInject';
+  return {
+    restrict: 'EA',
+    scope: {
+      usernames: '=',
+      format: '@'
+    },
+    link: function (scope, element) {
+      scope.$watch('usernames', function () {
+        if (typeof scope.usernames === 'undefined') {
+          return;
+        }
+        let userReq = [];
+        let guests = [];
+        
+        scope.usernames.forEach((user) => {
+          if (typeof user === 'undefined') {
+            return;
+          } else if (typeof user === 'string') {
+            userReq.push(user);
+          } else if (typeof user === 'object' && !user.guest) {
+            userReq.push(user.name);
+          } else if (user.guest) {
+            guests.push(user);
+          }
+        });
+
+        let otherData;
+        let formattedNames = '';
+
+        if (scope.format === 'other') {
+          UserService.getPublic(userReq).then((res) => {
+            let userData = res.userData;
+  
+            userData.forEach((user) => {
+              let otherMember = scope.usernames.find( u => u.name === user.username );
+              user.order = otherMember.order;
+            });
+            otherData = userData.concat(guests);
+            otherData.sort((a, b) => {
+              return a.order - b.order;
+            });
+
+            otherData.forEach((u, i, arr) => {
+              if (i === (arr.length - 1)) {
+                formattedNames += u.lname + ', ' + u.fname;
+              } else {
+                formattedNames += u.lname + ', ' + u.fname + '; ';
+              }
+            });
+            element.text(formattedNames);
+          });
+        } else {
+          UserService.getPublic(userReq).then((res) => {
+            let userData = res.userData;
+  
+            userData.forEach((u, i, arr) => {
+              if (i === (arr.length -1)) {
+                formattedNames += u.lname + ', ' + u.fname;
+              } else {
+                formattedNames += u.lname + ', ' + u.fname + '; ';
+              }
+            });
+            element.text(formattedNames);
+          });
+        }
+      });
+    }
+  };
+}
+
+export function dsAuthorList(UserService) {
+  'ngInject';
+  return {
+    restrict: 'EA',
+    scope: {
+      authors: '=',
+      format: '@'
+    },
+    link: function (scope, element) {
+      scope.$watch('authors', function () {
+        if (!scope.authors){
+          return;
+        }
+        let userReq = [];
+        let guests = [];
+
+        scope.authors.forEach((user) => {
+          if (user.authorship && !user.guest) {
+            userReq.push(user.name);
+          } else if (user.authorship && user.guest) {
+            guests.push(user);
+          }
+        });
+
+        UserService.getPublic(userReq).then((res) => {
+          let userData = res.userData;
+          let authorData;
+          let formattedNames = '';
+
+          userData.forEach((user) => {
+            let relAuthor = scope.authors.find( author => author.name === user.username );
+            user.order = relAuthor.order;
+          });
+          authorData = userData.concat(guests);
+          authorData.sort((a, b) => {
+            return a.order - b.order;
+          });
+
+
+          if (scope.format === 'hname') {
+            authorData.forEach((u) => {
+              formattedNames += u.lname + ', ' + u.fname[0] + '. ';
+            });
+            element.text(formattedNames);
+          } else {
+            authorData.forEach((u, i, arr) => {
+              if (i === (arr.length - 1)) {
+                formattedNames += u.lname + ', ' + u.fname;
+              } else {
+                formattedNames += u.lname + ', ' + u.fname + '; ';
+              }
+            });
+            element.text(formattedNames);
+          }
+        });
+      });
+    }
+  };
+}
+
+ export function dsFixTop($window) {
+    'ngInject';
     var $win = angular.element($window); // wrap window object as jQuery object
 
     return {
@@ -279,9 +431,10 @@
         });
       }
     };
-  });
+  }
 
-  mod.directive('yamzTerm', ['$http', function($http){
+  export function yamzTerm($http){
+    'ngInject';
     return {
         restrict: 'EA',
         scope: {
@@ -326,6 +479,4 @@
           });
         }
     };
-  }]);
-
-})(angular, jQuery);
+  }

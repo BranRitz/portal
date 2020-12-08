@@ -2,25 +2,19 @@
 {% load sekizai_tags %}
 {% load static %}
 
+{% block head_extra %}
+    <base href="{% url 'designsafe_search:index' %}">
+{% endblock %}
+
 {% block content %}
 <div class="container">
-  <div ng-controller="SearchCtrl as vm" ng-include="'{% static 'designsafe/apps/search/html/search.html' %}'">
+    <ui-view></ui-view>
   {{message}}
   </div>
 </div>
 {% addtoblock "js" %}
-  <script type="text/javascript" src="{% static 'vendor/angular-bootstrap/ui-bootstrap-tpls.js' %}"></script>
-  <script type="text/javascript" src="{% static 'vendor/angular-translate/angular-translate.js' %}"></script>
-  <script type="text/javascript" src="{% static 'vendor/angular-cookies/angular-cookies.js' %}"></script>
-  <script type="text/javascript" src="{% static 'vendor/angular-sanitize/angular-sanitize.js' %}"></script>
-  <script type="text/javascript" src="{% static 'vendor/underscore/underscore.js' %}"></script>
   <script type="text/javascript" src="{% static 'djng/js/django-angular.js' %}"></script>
-{% endaddtoblock %}
-
-{% addtoblock 'js' %}
-<script type="text/javascript" src="{% static 'designsafe/apps/search/scripts/app.js' %}"></script>
-<script type="text/javascript" src="{% static 'designsafe/apps/search/scripts/service.js' %}"></script>
-<script type="text/javascript" src="{% static 'designsafe/apps/search/scripts/directive.js' %}"></script>
+  <script type="text/javascript" src="{% static 'build/search.bundle.js' %}"></script>
 {% endaddtoblock %}
 
 {% endblock %}

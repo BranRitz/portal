@@ -1,10 +1,7 @@
-(function(window, angular, _, undefined) {
-  "use strict";
+import _ from 'underscore';
 
-  var mod = angular.module('designsafe');
-  mod.requires.push('django.context', 'httpi');
-
-  mod.factory('ProjectEntitiesService', ['httpi', '$interpolate', '$q', '$uibModal', 'Logging', 'ProjectEntityModel', function(httpi, $interpolate, $q, $uibModal, Logging, ProjectEntityModel) {
+export function ProjectEntitiesService(httpi, $interpolate, $q, $uibModal, Logging, ProjectEntityModel) {
+    'ngInject';
 
     var logger = Logging.getLogger('DataDepot.ProjectService');
 
@@ -81,5 +78,4 @@
     };
 
     return service;
-  }]);
-})(window, angular, _);
+  }

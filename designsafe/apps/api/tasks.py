@@ -4,7 +4,7 @@ import re
 import os
 import sys
 import json
-import urllib
+import urllib.request, urllib.parse, urllib.error
 from datetime import datetime
 from celery import shared_task
 from django.core.urlresolvers import reverse
@@ -14,115 +14,13 @@ from requests.exceptions import HTTPError
 
 from designsafe.apps.api.notifications.models import Notification, Broadcast
 from designsafe.apps.api.agave import get_service_account_client
+from designsafe.apps.projects.models.elasticsearch import IndexedProject
+from designsafe.apps.data.tasks import agave_indexer
+from elasticsearch_dsl.query import Q
+from elasticsearch.helpers import bulk
+from django.core.mail import send_mail
 
 logger = logging.getLogger(__name__)
-
-@shared_task(bind=True, max_retries=None)
-def reindex_agave(self, username, file_id, full_indexing=True,
-                  levels=1, pems_indexing=True, index_full_path=True):
-    user = get_user_model().objects.get(username=username)
-    levels=1
-
-    from designsafe.apps.api.data import AgaveFileManager
-    agave_fm = AgaveFileManager(user)
-    system_id, file_user, file_path = agave_fm.parse_file_id(file_id)
-    if system_id != settings.AGAVE_STORAGE_SYSTEM:
-        file_id_comps = file_id.strip('/').split('/')
-        system_id = file_id_comps[0]
-        file_user = username
-        if len(file_id_comps) > 1:
-            file_path = os.path.join(*file_id_comps[1:])
-        else:
-            file_path = '/'
-
-    agave_fm.indexer.index(system_id, file_path, file_user,
-                           full_indexing = full_indexing,
-                           pems_indexing = pems_indexing,
-                           index_full_path = index_full_path,
-                           levels = levels)
-    #parent_path_comps = file_path.strip('/').split('/')
-    #if len(parent_path_comps) > 0:
-    #    parent_path = os.path.join(*file_path.strip('/').split('/')[:-1])
-    #    agave_fm.indexer.index(system_id, parent_path, file_user,
-    #                           levels = 1)
-
-
-@shared_task(bind=True)
-def share_agave(self, username, file_id, permissions, recursive):
-    try:
-        # n = Notification(event_type = 'data',
-        #                  status = 'INFO',
-        #                  operation = 'share_initializing',
-        #                  message = 'File sharing is initializing. Please wait...',
-        #                  user = username,
-        #                  extra = {'target_path': reverse('designsafe_data:data_depot',
-        #                                                  args=['agave', file_id])})
-        # n.save()
-        user = get_user_model().objects.get(username=username)
-
-        from designsafe.apps.api.data import AgaveFileManager
-        from designsafe.apps.api.data.agave.file import AgaveFile
-        from designsafe.apps.api.data.agave.elasticsearch.documents import Object
-        agave_fm = AgaveFileManager(user)
-        system_id, file_user, file_path = agave_fm.parse_file_id(file_id)
-
-        f = AgaveFile.from_file_path(system_id, username, file_path,
-                                     agave_client=agave_fm.agave_client)
-        f_dict = f.to_dict()
-
-        n = Notification(event_type = 'data',
-                         status = 'INFO',
-                         operation = 'share_initializing',
-                         message = 'File sharing is initializing. Please wait...',
-                         user = username,
-                         extra = f_dict)
-        n.save()
-
-        f.share(permissions, recursive)
-        #reindex_agave.apply_async(args=(self.username, file_id))
-        # self.indexer.index(system, file_path, file_user, pems_indexing=True)
-
-        esf = Object.from_file_path(system_id, username, file_path)
-        esf.share(username, permissions, recursive)
-
-        # Notify owner share completed
-        n = Notification(event_type = 'data',
-                         status = 'SUCCESS',
-                         operation = 'share_finished',
-                         message = 'File permissions were updated successfully.',
-                         user = username,
-                         extra = f_dict)
-        n.save()
-
-        # Notify users they have new shared files
-        for pem in permissions:
-            if pem['permission'] != 'NONE':
-                message = '%s shared some files with you.' % user.get_full_name()
-                n = Notification(event_type = 'data',
-                                 status = 'SUCCESS',
-                                 operation = 'share_finished',
-                                 message = message,
-                                 user = pem['user_to_share'],
-                                 extra = f_dict)
-                n.save()
-
-    except:
-        logger.error('Error sharing file/folder', exc_info=True,
-                     extra = {
-                         'username': username,
-                         'file_id': file_id,
-                         'permissions': permissions
-                     })
-        n = Notification(event_type='data',
-                         status=Notification.ERROR,
-                         operation='share_error',
-                         message='We were unable to share the specified folder/file(s). '
-                                 'Please try again...',
-                         user=username,
-                         extra={'system': system_id,
-                                'path': file_path
-                         })
-        n.save()
 
 @shared_task(bind=True)
 def box_download(self, username, src_resource, src_file_id, dest_resource, dest_file_id):
@@ -219,7 +117,7 @@ def box_download_file(box_file_manager, box_file_id, download_directory_path):
     :return: the full path to the downloaded file
     """
     box_file = box_file_manager.box_api.file(box_file_id).get()
-    safe_filename = box_file.name.encode(sys.getfilesystemencoding(), 'ignore')  # convert utf-8 chars
+    safe_filename = box_file.name
     file_download_path = os.path.join(download_directory_path, safe_filename)
     logger.debug('Download file %s <= box://file/%s', file_download_path, box_file_id)
 
@@ -240,7 +138,7 @@ def box_download_folder(box_file_manager, box_folder_id, download_path):
     :return:
     """
     box_folder = box_file_manager.box_api.folder(box_folder_id).get()
-    safe_dirname = box_folder.name.encode(sys.getfilesystemencoding(), 'ignore')  # convert utf-8 chars
+    safe_dirname = box_folder.name
     directory_path = os.path.join(download_path, safe_dirname)
     logger.debug('Creating directory %s <= box://folder/%s', directory_path, box_folder_id)
     try:
@@ -485,217 +383,6 @@ def copy_public_to_mydata(self, username, src_resource, src_file_id, dest_resour
         n.save()
 
 @shared_task(bind=True)
-def external_resource_upload(self, username, dest_resource, src_file_id, dest_file_id):
-    """
-    :param self:
-    :param username:
-    :param dest_resource:
-    :param src_file_id:
-    :param dest_file_id:
-    :return:
-    """
-    logger.debug('Initializing external_resource_upload. username: %s, src_file_id: %s, dest_resource: %s, dest_file_id: %s ', username, src_file_id, dest_resource, dest_file_id)
-
-    from designsafe.apps.api.external_resources.box.filemanager.manager \
-            import FileManager as BoxFileManager
-    from designsafe.apps.api.external_resources.dropbox.filemanager.manager \
-            import FileManager as DropboxFileManager
-    from designsafe.apps.api.external_resources.googledrive.filemanager.manager \
-            import FileManager as GoogleDriveFileManager
-
-    user = get_user_model().objects.get(username=username)
-
-    if dest_resource == 'box':
-        fmgr = BoxFileManager(user)
-    elif dest_resource == 'dropbox':
-        fmgr = DropboxFileManager(user)
-    elif dest_resource == 'googledrive':
-        fmgr = GoogleDriveFileManager(user)
-
-    logger.debug('fmgr.upload( %s, %s, %s)', username, src_file_id, dest_file_id)
-    fmgr.upload(username, src_file_id, dest_file_id)
-    # try:
-    #     n = Notification(event_type='data',
-    #                      status=Notification.INFO,
-    #                      operation='box_upload_start',
-    #                      message='Starting uploading file %s to box.' % (src_file_id,),
-    #                      user=username,
-    #                      extra={})
-    #     n.save()
-    #     user = get_user_model().objects.get(username=username)
-
-    #     from designsafe.apps.api.external_resources.box.filemanager.manager import \
-    #          FileManager as BoxFileManager
-    #     from designsafe.apps.api.agave.filemanager.agave import AgaveFileManager
-    #     # Initialize agave filemanager
-    #     agave_fm = AgaveFileManager(agave_client=user.agave_oauth.client)
-    #     # Split src ination file path
-    #     src_file_path_comps = src_file_id.strip('/').split('/')
-    #     # If it is an agave file id then the first component is a system id
-    #     agave_system_id = src_file_path_comps[0]
-    #     # Start construction the actual real path into the NSF mount
-    #     if src_file_path_comps[1:]:
-    #         src_real_path = os.path.join(*src_file_path_comps[1:])
-    #     else:
-    #         src_real_path = '/'
-    #     # Get what the system id maps to
-    #     base_mounted_path = agave_fm.base_mounted_path(agave_system_id)
-    #     # Add actual path
-    #     if re.search(r'^project-', agave_system_id):
-    #         project_dir = agave_system_id.replace('project-', '', 1)
-    #         src_real_path = os.path.join(base_mounted_path, project_dir, src_real_path.strip('/'))
-    #     else:
-    #         src_real_path = os.path.join(base_mounted_path, src_real_path.strip('/'))
-    #     logger.debug('src_real_path: {}'.format(src_real_path))
-
-    #     box_fm = BoxFileManager(user)
-    #     box_file_type, box_file_id = box_fm.parse_file_id(file_id=dest_file_id.strip('/'))
-    #     if os.path.isfile(src_real_path):
-    #         box_upload_file(box_fm, box_file_id, src_real_path)
-    #     elif os.path.isdir(src_real_path):
-    #         box_upload_directory(box_fm, box_file_id, src_real_path)
-    #     else:
-    #         logger.error('Unable to upload %s: file does not exist!',
-    #                      src_real_path)
-
-    #     n = Notification(event_type='data',
-    #                      status=Notification.SUCCESS,
-    #                      operation='box_upload_end',
-    #                      message='File %s has been copied to box successfully!' % (src_file_id, ),
-    #                      user=username,
-    #                      extra={})
-    #     n.save()
-    # except Exception as err:
-    #     logger.exception('Unexpected task failure: box_upload', extra={
-    #         'username': username,
-    #         'src_file_id': src_file_id,
-    #         'dst_file_id': dest_file_id
-    #     })
-    #     n = Notification(event_type='data',
-    #                      status=Notification.ERROR,
-    #                      operation='box_upload_error',
-    #                      message='We were unable to get the specified file from box. '
-    #                              'Please try again...',
-    #                      user=username,
-    #                      extra={})
-    #     n.save()
-    #     raise
-
-@shared_task(bind=True)
-def external_resource_download(self, file_mgr_name, username, src_file_id, dest_file_id):
-    """
-    :param self:
-    :param username:
-    :param src_file_id:
-    :param dest_file_id:
-    :return:
-    """
-    logger.debug('Downloading %s://%s for user %s to %s',
-                 file_mgr_name, src_file_id, username, dest_file_id)
-
-    from designsafe.apps.api.external_resources.box.filemanager.manager \
-            import FileManager as BoxFileManager
-    from designsafe.apps.api.external_resources.dropbox.filemanager.manager \
-            import FileManager as DropboxFileManager
-    from designsafe.apps.api.external_resources.googledrive.filemanager.manager \
-            import FileManager as GoogleDriveFileManager
-
-    user = get_user_model().objects.get(username=username)
-
-    if file_mgr_name == 'box':
-        fmgr = BoxFileManager(user)
-    elif file_mgr_name == 'dropbox':
-        fmgr = DropboxFileManager(user)
-    elif file_mgr_name == 'googledrive':
-        fmgr = GoogleDriveFileManager(user)
-
-    fmgr.copy(username, src_file_id, dest_file_id)
-
-    # try:
-    #     n = Notification(event_type='data',
-    #                      status=Notification.INFO,
-    #                      operation='box_download_start',
-    #                      message='Starting download file %s from box.' % (src_file_id,),
-    #                      user=username,
-    #                      extra={})
-    #     n.save()
-    #     logger.debug('username: {}, src_file_id: {}, dest_file_id: {}'.format(username, src_file_id, dest_file_id))
-    #     user = get_user_model().objects.get(username=username)
-
-    #     from designsafe.apps.api.external_resources.box.filemanager.manager import \
-    #          FileManager as BoxFileManager
-    #     from designsafe.apps.api.agave.filemanager.agave import AgaveFileManager
-    #     # Initialize agave filemanager
-    #     agave_fm = AgaveFileManager(agave_client=user.agave_oauth.client)
-    #     # Split destination file path
-    #     dest_file_path_comps = dest_file_id.strip('/').split('/')
-    #     # If it is an agave file id then the first component is a system id
-    #     agave_system_id = dest_file_path_comps[0]
-    #     # Start construction the actual real path into the NSF mount
-    #     if dest_file_path_comps[1:]:
-    #         dest_real_path = os.path.join(*dest_file_path_comps[1:])
-    #     else:
-    #         dest_real_path = '/'
-    #     # Get what the system id maps to
-    #     base_mounted_path = agave_fm.base_mounted_path(agave_system_id)
-    #     # Add actual path
-    #     if re.search(r'^project-', agave_system_id):
-    #         project_dir = agave_system_id.replace('project-', '', 1)
-    #         dest_real_path = os.path.join(base_mounted_path, project_dir, dest_real_path.strip('/'))
-    #     else:
-    #         dest_real_path = os.path.join(base_mounted_path, dest_real_path.strip('/'))
-    #     logger.debug('dest_real_path: {}'.format(dest_real_path))
-
-    #     box_fm = BoxFileManager(user)
-    #     box_file_type, box_file_id = box_fm.parse_file_id(file_id=src_file_id)
-
-    #     levels = 0
-    #     downloaded_file_path = None
-    #     if box_file_type == 'file':
-    #         downloaded_file_path = box_fm.download_file(box_file_id, dest_real_path)
-    #         levels = 1
-    #     elif box_file_type == 'folder':
-    #         downloaded_file_path = box_fm.download_folder(box_file_id, dest_real_path)
-
-    #     #if downloaded_file_path is not None:
-    #     #    downloaded_file_id = agave_fm.from_file_real_path(downloaded_file_path)
-    #     #    system_id, file_user, file_path = agave_fm.parse_file_id(downloaded_file_id)
-
-    #     n = Notification(event_type='data',
-    #                      status=Notification.SUCCESS,
-    #                      operation='box_download_end',
-    #                      message='File %s has been copied from box successfully!' % (src_file_id, ),
-    #                      user=username,
-    #                      extra={})
-    #     n.save()
-    #     if re.search(r'^project-', agave_system_id):
-    #         project_dir = agave_system_id.replace('project-', '', 1)
-    #         project_dir = os.path.join(base_mounted_path.strip('/'), project_dir)
-    #         agave_file_path = downloaded_file_path.replace(project_dir, '', 1).strip('/')
-    #     else:
-    #         agave_file_path = downloaded_file_path.replace(base_mounted_path, '', 1).strip('/')
-
-    #     reindex_agave.apply_async(kwargs={
-    #                               'username': user.username,
-    #                               'file_id': '{}/{}'.format(agave_system_id, agave_file_path)
-    #                               })
-    # except:
-    #     logger.exception('Unexpected task failure: box_download', extra={
-    #         'username': username,
-    #         'box_file_id': src_file_id,
-    #         'dest_file_id': dest_file_id
-    #     })
-    #     n = Notification(event_type='data',
-    #                      status=Notification.ERROR,
-    #                      operation='box_download_error',
-    #                      message='We were unable to get the specified file from box. '
-    #                              'Please try again...',
-    #                      user=username,
-    #                      extra={})
-    #     n.save()
-    #     raise
-
-@shared_task(bind=True)
 def check_project_files_meta_pems(self, project_uuid):
     from designsafe.apps.data.models.agave.files import BaseFileMetadata
     logger.debug('Checking metadata pems linked to a project')
@@ -736,28 +423,142 @@ def set_project_id(self, project_uuid):
     project.save(service)
     logger.debug('updated project id=%s', project.uuid)
     id_meta['value']['id'] = project_id
-    service.meta.updateMetadata(body=id_meta, uuid=id_meta['uuid'])
+    new_metadata = service.meta.updateMetadata(body=id_meta, uuid=id_meta['uuid'])
     logger.debug('updated id record=%s', id_meta['uuid'])
+
+    index_or_update_project.apply_async(args=[project.uuid], queue='api')
+
+    return str(project_id)
+
+@shared_task(bind=True)
+def index_or_update_project(self, uuid):
+    """
+    Takes a project UUID and either creates a new document in the 
+    des-projects index or updates the document if one already exists for that
+    project.
+    """
+    client = get_service_account_client() 
+    query = {'uuid': uuid}
+    listing = client.meta.listMetadata(q=json.dumps(query), offset=0, limit=1)
+    index_projects_listing(listing)
+
+
+def index_projects_listing(projects):
+    """
+    Index the result of an Agave projects listing
+
+    Parameters
+    ----------
+    projects: list
+        list of project metadata objects (either dict or agavepy.agave.Attrdict)
+
+    Returns
+    -------
+    Void
+    """
+    from designsafe.apps.projects.models.elasticsearch import IndexedProject
+    idx = IndexedProject.Index.name
+    client = IndexedProject._get_connection()
+    ops = []
+    for _project in projects:
+        # Iterate through projects and construct a bulk indexing operation.
+
+        project_dict = dict(_project)
+        project_dict = {key: value for key, value in project_dict.items() if key != '_links'}
+        award_number = project_dict['value'].get('awardNumber', []) 
+        if not isinstance(award_number, list):
+            award_number = [{'number': project_dict['value']['awardNumber'] }]
+        if not all(isinstance(el, dict) for el in award_number):
+            # Punt if the list items are some type other than dict.
+            award_number = []
+        project_dict['value']['awardNumber'] = award_number
+
+        if project_dict['value'].get('guestMembers', []) == [None]:
+            project_dict['value']['guestMembers'] = []
+        if project_dict['value'].get('nhEventStart', []) == '':
+            project_dict['value']['nhEventStart'] = None
+        if project_dict['value'].get('nhEventEnd', []) == '':
+            project_dict['value']['nhEventEnd'] = None
+
+        ops.append({
+            '_index': idx,
+            '_id': project_dict['uuid'],
+            'doc': project_dict,
+            '_op_type': 'update',
+            'doc_as_upsert': True
+            })
+
+    bulk(client, ops)
+
+
+def list_all_projects(offset=0, limit=100):
+    """
+    Iterate through all projects, yielding 100 (or some defined o) at a time.
+
+    Parameters
+    ----------
+    offset: int
+        Offset to begin iteration at.
+    limit: int
+        Number of project metadata items returned per listing
+
+    Yields
+    ------
+    agavepy.agave.Attrdict
+    """
+    client = get_service_account_client()
+    query = {'name': 'designsafe.project'}
+    while True:
+        listing = client.meta.listMetadata(q=json.dumps(query), offset=offset, limit=limit)
+        offset += limit
+        yield listing
+        if len(listing) < limit:
+            break
+
+
+@shared_task(bind=True)
+def reindex_projects(self):
+    """
+    Index all project metadata.
+
+    Returns
+    -------
+    Void
+    """
+    for listing in list_all_projects():
+        try:
+            index_projects_listing(listing)
+        except Exception as e:
+            logger.exception(e)
+
 
 @shared_task(bind=True, max_retries=5)
 def copy_publication_files_to_corral(self, project_id):
-    from designsafe.apps.api.agave.filemanager.public_search_index import Publication
-    from designsafe.apps.api.agave.models.files import BaseFileResource
+    # Only copy published files while in prod
+    if getattr(settings, 'DESIGNSAFE_ENVIRONMENT', 'dev') != 'default':
+        return
+
+    from designsafe.libs.elasticsearch.docs.publications import BaseESPublication
     import shutil
-    publication = Publication(project_id=project_id)
+    publication = BaseESPublication(project_id=project_id)
     filepaths = publication.related_file_paths()
+    if not len(filepaths):
+        res = get_service_account_client().files.list(
+            systemId='project-{project_uuid}'.format(
+                project_uuid=publication.project.uuid
+            ),
+            filePath='/'
+        )
+        filepaths = [
+            _file.path.strip('/') for _file in res if (
+                _file.name != '.' and _file.name != 'Trash'
+            )
+        ]
+
     filepaths = list(set(filepaths))
     filepaths = sorted(filepaths)
     base_path = ''.join(['/', publication.projectId])
-    #service = get_service_account_client()
-    #service.files.manage(systemId=settings.PUBLISHED_SYSTEM,
-    #                     filePath='/',
-    #                     body={'action': 'mkdir',
-    #                           'path': base_path})
-    #base_dir = BaseFileResource.listing(system=settings.PUBLISHED_SYSTEM,
-    #                                    path=base_path,
-    #                                    agave_client=service)
-    #proj_system = 'project-{}'.format(publication.project['uuid'])
+    os.chmod('/corral-repl/tacc/NHERI/published', 0o755)
     prefix_dest = '/corral-repl/tacc/NHERI/published/{}'.format(project_id)
     if not os.path.isdir(prefix_dest):
         os.mkdir(prefix_dest)
@@ -770,82 +571,146 @@ def copy_publication_files_to_corral(self, project_id):
         if os.path.isdir(local_src_path):
             try:
                 #os.mkdir(local_dst_path)
+                if not os.path.isdir(os.path.dirname(local_dst_path)):
+                    os.makedirs(os.path.dirname(local_dst_path))
                 shutil.copytree(local_src_path, local_dst_path)
+                for root, dirs, files in os.walk(local_dst_path):
+                    for d in dirs:
+                        os.chmod(os.path.join(root, d), 0o555)
+                    for f in files:
+                        os.chmod(os.path.join(root, f), 0o444)
+                os.chmod(local_dst_path, 0o555)
             except OSError as exc:
+                logger.info(exc)
+            except IOError as exc:
                 logger.info(exc)
         else:
             try:
                 if not os.path.isdir(os.path.dirname(local_dst_path)):
-                    os.mkdir(os.path.dirname(local_dst_path))
+                    os.makedirs(os.path.dirname(local_dst_path))
+                for root, dirs, files in os.walk(os.path.dirname(local_dst_path)):
+                    for d in dirs:
+                        os.chmod(os.path.join(root, d), 0o555)
+                    for f in files:
+                        os.chmod(os.path.join(root, f), 0o444)
 
                 shutil.copy(local_src_path, local_dst_path)
+                os.chmod(local_dst_path, 0o444)
             except OSError as exc:
                 logger.info(exc)
+            except IOError as exc:
+                logger.info(exc)
 
-    #for filepath in filepaths:
-    #    filepath = filepath.strip('/')
-    #    logger.info('Copying: {}'.format(filepath))
-    #    path_comps = filepath.split('/')
-    #    parent_path = os.path.join(*path_comps[:-1])
-    #    try:
-    #        file_obj = BaseFileResource.\
-    #                      listing(system=proj_system,
-    #                                  path=filepath,
-    #                                  agave_client=service)
-    #        if file_obj.type == 'dir':
-    #            logger.info('path is a directory, ensuring path exists')
-    #            base_obj = BaseFileResource.\
-    #                         ensure_path(service,
-    #                                     settings.PUBLISHED_SYSTEM,
-    #                                     os.path.join(base_path, parent_path))
-    #        else:
-    #            logger.info('path is a file, ensuring parent path exists')
-    #            base_obj = BaseFileResource.\
-    #                         ensure_path(service,
-    #                                     settings.PUBLISHED_SYSTEM,
-    #                                     os.path.join(base_path, parent_path))
-    #        base_obj.import_data(file_obj.system, file_obj.path)
-    #    except Exception as err:
-    #        logger.error('Error when copying data to published: %s. %s', filepath, err)
-    #        local_src_path = '{}/{}'.format(prefix_src, file_obj.path)
-    #        local_dst_path = '{}/{}'.format(prefix_dest, file_obj.path)
-    #        logger.info('Trying to copy: %s to %s', local_src_path, local_dst_path)
-    #        if os.path.isdir(local_src_path):
-    #            shutil.copytree(local_src_path, local_dst_path)
-    #        else:
-    #            shutil.copy(local_src_path, local_dst_path)
-    #        #self.retry(exc=err)
-
-    #try: 
-    #    image = BaseFileResource.\
-    #              listing(system=proj_system,
-    #                      path='projectimage.jpg',
-    #                      agave_client=service)
-    #    base_dir.import_data(image.system, image.path)
-    #except HTTPError as err:
-    #    logger.debug('No project image')
+    os.chmod(prefix_dest, 0o555)
+    os.chmod('/corral-repl/tacc/NHERI/published', 0o555)
     save_to_fedora.apply_async(args=[project_id])
+    agave_indexer.apply_async(kwargs={'username': 'ds_admin', 'systemId': 'designsafe.storage.published', 'filePath': '/' + project_id, 'recurse':True}, queue='indexing')
 
-@shared_task(bind=True, max_retries=5, default_retry_delay=60)
-def save_publication(self, project_id):
-    from designsafe.apps.api.agave.filemanager.public_search_index import Publication  
-    from designsafe.apps.api.projects.managers import publication as PublicationManager
+
+@shared_task(bind=True, max_retries=1, default_retry_delay=60)
+def freeze_publication_meta(self, project_id, entity_uuids=None):
+    """Freeze publication meta.
+
+    :param str project_id: Project Id.
+    :param str entity_uuid: Entity uuid.
+    """
+    from designsafe.apps.projects.managers import publication as PublicationManager
     try:
-        pub = Publication(project_id=project_id)
-        publication = PublicationManager.reserve_publication(pub.to_dict())
-        pub.update(**publication)
-        copy_publication_files_to_corral.apply_async(args=[pub.projectId],queue="files")
+        PublicationManager.freeze_project_and_entity_metadata(
+            project_id,
+            entity_uuids
+        )
     except Exception as exc:
-        logger.error('Proj Id: %s. %s', project_id, exc)
+        logger.error('Proj Id: %s. %s', project_id, exc, exc_info=True)
         raise self.retry(exc=exc)
+
+
+@shared_task(bind=True, max_retries=1, default_retry_delay=60)
+def save_publication(self, project_id, entity_uuids=None):
+    """Save publication.
+
+    This task will create a draft DOI and copy all metadata to ES.
+    For project types other than 'Other' a main entity uuid *must* be given.
+
+    :param str project_id: Project Id.
+    :param list of entity_uuid strings: Main entity uuid.
+    """
+    from designsafe.apps.projects.managers import publication as PublicationManager
+    try:
+        PublicationManager.draft_publication(
+            project_id,
+            entity_uuids
+        )
+        PublicationManager.freeze_project_and_entity_metadata(
+            project_id,
+            entity_uuids
+        )
+    except Exception as exc:
+        logger.error('Proj Id: %s. %s', project_id, exc, exc_info=True)
+        raise self.retry(exc=exc)
+
+@shared_task(bind=True)
+def zip_project_files(self, project_uuid):
+    from designsafe.apps.projects.models.agave.base import Project
+    from designsafe.apps.api.agave import get_service_account_client
+
+    try:
+        ag = get_service_account_client()
+        proj = Project.manager().get(ag, uuid=project_uuid)
+        proj.archive()
+    except Exception as exc:
+        logger.error('Zip Proj UUID: %s. %s', project_uuid, exc, exc_info=True)
+        raise self.retry(exc=exc)
+
+@shared_task(bind=True)
+def zip_publication_files(self, project_id):
+    from designsafe.apps.projects.managers import publication as PublicationManager
+    # Only create archive in prod
+    if getattr(settings, 'DESIGNSAFE_ENVIRONMENT', 'dev') != 'default':
+        return
+
+    try:
+        PublicationManager.archive(project_id=project_id)
+    except Exception as exc:
+        logger.error('Zip Proj Id: %s. %s', project_id, exc, exc_info=True)
+        raise self.retry(exc=exc)
+
+@shared_task(bind=True)
+def swap_file_tag_uuids(self, project_id):
+    """Swap File Tag UUID's
+
+    This task will update each file tag's file uuid from the file in
+    the project directory to the copied file in the published storage system
+
+    :param str project_id: Project Id.
+    """
+    from designsafe.apps.projects.managers import publication as PublicationManager
+    try:
+        PublicationManager.fix_file_tags(project_id)
+    except Exception as exc:
+        logger.error('File Tag Correction Error: %s. %s', project_id, exc, exc_info=True)
+        raise self.retry(exc=exc)
+
+@shared_task(bind=True)
+def set_publish_status(self, project_id, entity_uuids=None, publish_dois=False):
+    from designsafe.apps.projects.managers import publication as PublicationManager
+    # Only publish DOIs created from prod
+    if getattr(settings, 'DESIGNSAFE_ENVIRONMENT', 'dev') == 'default':
+        publish_dois = True
+
+    PublicationManager.publish_resource(
+        project_id,
+        entity_uuids,
+        publish_dois
+    )
 
 @shared_task(bind=True, max_retries=5, default_retry_delay=60)
 def save_to_fedora(self, project_id):
     import requests
     import magic
-    from designsafe.apps.api.agave.filemanager.public_search_index import Publication  
+    from designsafe.libs.elasticsearch.docs.publications import BaseESPublication 
     try:
-        pub = Publication(project_id=project_id)
+        pub = BaseESPublication(project_id=project_id)
         pub.update(status='published')
         _root = os.path.join('/corral-repl/tacc/NHERI/published', project_id)
         fedora_base = 'http://fedoraweb01.tacc.utexas.edu:8080/fcrepo/rest/publications_01'
@@ -869,7 +734,7 @@ def save_to_fedora(self, project_id):
                 _path = full_path.replace(_root, '', 1)
                 _path = _path.replace('[', '-')
                 _path = _path.replace(']', '-')
-                url = ''.join([fedora_project_base, urllib.quote(_path)])
+                url = ''.join([fedora_project_base, urllib.parse.quote(_path)])
                 #logger.debug('uploading: %s', url)
                 with open(os.path.join(root, name), 'rb') as _file:
                     requests.put(url, data=_file, headers=headers)
@@ -881,6 +746,108 @@ def save_to_fedora(self, project_id):
                 url = ''.join([fedora_project_base, _path])
                 #logger.debug('creating: %s', _path)
                 requests.put(url)
+
     except Exception as exc:
         logger.error('Proj Id: %s. %s', project_id, exc)
         raise self.retry(exc=exc)
+
+@shared_task(bind=True, max_retries=5, default_retry_delay=60)
+def set_facl_project(self, project_uuid, usernames):
+    client = get_service_account_client()
+    for username in usernames:
+        job_body = {
+            'parameters': {
+                'username': username,
+                'directory': 'projects/{}'.format(project_uuid)
+            },
+            'name': 'setfacl',
+            'appId': 'setfacl_corral3-0.1'
+        }
+        res = client.jobs.submit(body=job_body)
+        logger.debug('set facl project: {}'.format(res))
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def email_project_admins(self, project_id, project_uuid, project_title, project_url, username):
+    #contact project admins regarding publication of sensitive information
+    service = get_service_account_client()
+    admins = settings.PROJECT_ADMINS_EMAIL
+    user = get_user_model().objects.get(username=username)
+
+    for admin in admins:
+        email_body = """
+            <p>Hello,</p>
+            <p>
+                The following Field Research project has been created with the intent of publishing sensitive information:
+                <br>
+                <b>{prjID} - {title}</b>
+            </p>
+            <p>
+                Contact PI:
+                <br>
+                {name} - {email}
+            </p>
+            <p>
+                Link to Project:
+                <br>
+                <a href=\"{url}\">{url}</a>.
+            </p>
+            This is a programmatically generated message. Do NOT reply to this message.
+            """.format(name=user.get_full_name(), email=user.email, title=project_title, prjID=project_id, url=project_url)
+
+        send_mail(
+            "DesignSafe PII Alert",
+            email_body,
+            settings.DEFAULT_FROM_EMAIL,
+            [admin],
+            html_message=email_body)
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def email_collaborator_added_to_project(self, project_id, project_uuid, project_title, project_url, team_members_to_add, co_pis_to_add):
+    service = get_service_account_client()
+    for username in team_members_to_add + co_pis_to_add:
+        collab_users = get_user_model().objects.filter(username=username)
+        if collab_users:
+            for collab_user in collab_users:
+                email_body = """
+                        <p>Hi {name},</p><br>
+                        <p>You have been added to the project <b>{title} (ID: {prjID})</b>.</p><br>
+                        <p>You can visit the project using the url <a href=\"{url}\">{url}</a>.</p>
+                        <p>You can now start working on the project. Please use your TACC account to access the DesignSafe-CI website or to ask for help.</p>
+                        <p>Thanks,<br>
+                        The DesignSafe-CI Team.<br><br>
+                        This is a programmatically generated message. Do NOT reply to this message.
+                        """.format(name=collab_user.get_full_name(), title=project_title, prjID=project_id, url=project_url)
+                try:
+                    collab_user.profile.send_mail("You have been added to a DesignSafe project!", email_body)
+                except DesignSafeProfile.DoesNotExist as err:
+                    logger.info("Could not send email to user {}".format(collab_user))
+                    send_mail(
+                        "You have been added to a project!",
+                        email_body,
+                        settings.DEFAULT_FROM_EMAIL,
+                        [collab_user.email],
+                        html_message=body)
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=60)
+def email_user_publication_request_confirmation(self, username):
+    user = get_user_model().objects.get(username=username)
+    email_subject = 'Your DesignSafe Publication Request Has Been Issued'
+    email_body = """
+    <p>Depending on the size of your data, the publication might take a few minutes or a couple of hours to appear in the <a href=\"{pub_url}\">Published Directory.</a></p>
+    <p>During this time, check-in to see if your publication appears. 
+    If your publication does not appear, is incomplete, or does not have a DOI, <a href=\"{ticket_url}\">please submit a ticket.</a></p>
+    <p><strong>Do not</strong> attempt to republish by clicking Request DOI & Publish again.</p>
+    <p>This is a programmatically generated message. <strong>Do NOT</strong> reply to this message. 
+    If you have any feedback or questions, please feel free to <a href=\"{ticket_url}\">submit a ticket.</a></p>
+    """.format(pub_url="https://www.designsafe-ci.org/data/browser/public/", ticket_url="https://www.designsafe-ci.org/help/new-ticket/")
+    try:
+        user.profile.send_mail(email_subject, email_body)
+    except Exception as e:
+        logger.info("Could not send email to user {}".format(user))
+        send_mail(
+            email_subject,
+            email_body,
+            settings.DEFAULT_FROM_EMAIL,
+            [user.email],
+            html_message=email_body
+        )

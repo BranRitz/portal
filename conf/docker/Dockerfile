@@ -1,21 +1,37 @@
-FROM buildpack-deps:trusty
+FROM python:3.6-buster
 
-MAINTAINER DesignSafe-CI <designsafe-ci@tacc.utexas.edu>
+LABEL MAINTAINER="DesignSafe-CI <designsafe-ci@tacc.utexas.edu>"
+
+ARG DEBIAN_FRONTEND=noninteractive
 
 EXPOSE 8000
 
-ENV DEBIAN_FRONTEND noninteractive
 ENV TERM xterm
+USER root
 
-RUN apt-get update && \
-    apt-get upgrade -y && \
-    curl -sL https://deb.nodesource.com/setup_8.x | sudo -E bash - && \
-    apt-get install -y build-essential python python-dev gettext nodejs xvfb chromium-browser ruby-sass && \
-    curl -SL 'https://bootstrap.pypa.io/get-pip.py' | python
+# install locales for en_us.utf-8
+RUN apt-get update && apt-get install -y \
+    dialog \
+    apt-utils \
+    locales \
+    && rm -rf /var/lib/apt/lists/* \
+    && localedef -i en_US -c -f UTF-8 -A /usr/share/locale/locale.alias en_US.UTF-8
 
-RUN npm install -g bower
+ENV LC_ALL en_US.utf-8
+ENV LANG en_US.utf-8
 
-RUN pip install --upgrade pip && pip install uwsgi uwsgitop
+RUN apt-get update && apt-get install -y \
+    gawk \
+    unzip \
+    wget \
+    git \
+    vim
+
+# install node 12.x
+RUN curl -sL https://deb.nodesource.com/setup_12.x | bash -
+RUN apt-get install -y nodejs
+
+RUN pip3 install --upgrade pip setuptools wheel && pip3 install uwsgi uwsgitop pip-tools
 
 RUN mkdir -p /opt/uwsgi && \
     curl -SLk -o /opt/uwsgi/uwsgi-2.0.15.tar.gz https://projects.unbit.it/downloads/uwsgi-2.0.15.tar.gz && \
@@ -24,26 +40,24 @@ RUN mkdir -p /opt/uwsgi && \
     mkdir -p /usr/lib/uwsgi/plugins && \
     mv zabbix_plugin.so /usr/lib/uwsgi/plugins/.
 
-COPY requirements.txt /tmp/requirements.txt
-
-RUN pip install -r /tmp/requirements.txt
-
 RUN groupadd --gid 816877 G-816877 && \
-    useradd --uid 458981 --gid G-816877 --groups staff -m --shell /bin/bash tg458981
+    useradd --uid 458981 --gid G-816877 -m --shell /bin/bash tg458981 -d /home/tg458981
 
 COPY . /srv/www/designsafe
 
-#COPY bin/* /usr/local/bin/
+RUN chown -R tg458981:G-816877 /srv/www/designsafe
+RUN mkdir /src
+RUN chown -R tg458981:G-816877 /src
+
+USER tg458981
+
+COPY requirements.txt /tmp/
+
+ENV PATH="/home/tg458981/.local/bin:${PATH}"
+RUN pip3 install -r /tmp/requirements.txt
+
+RUN chmod u+x /srv/www/designsafe/bin/build_client.sh && /srv/www/designsafe/bin/build_client.sh $DJANGO_DEBUG
+
+RUN echo "prefix=~/.npm-global" >> ~/.npmrc
 
 WORKDIR /srv/www/designsafe
-
-RUN su tg458981 -c "bower install"
-
-RUN npm install
-
-RUN mkdir -p  designsafe/static/cascade/css/fonts/ && cp -R designsafe/static/vendor/bootstrap/fonts/* designsafe/static/cascade/css/fonts/.
-
-RUN python manage.py collectstatic -c --traceback --noinput
-
-RUN chown -R tg458981:G-816877 /var/www/designsafe-ci.org
-RUN chown -R tg458981:G-816877 /srv/www/designsafe

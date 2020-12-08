@@ -1,33 +1,97 @@
 """Base"""
+import datetime
 import logging
 import six
 import json
+import zipfile
+import os
+from django.contrib.auth import get_user_model
+from django.core.exceptions import ObjectDoesNotExist
+from pytas.http import TASClient
 from designsafe.apps.data.models.agave.base import Model as MetadataModel
 from designsafe.apps.data.models.agave import fields
-
+from designsafe.apps.data.models.elasticsearch import IndexedPublication, IndexedPublicationLegacy
+from designsafe.libs.elasticsearch.exceptions import DocumentNotFound
 logger = logging.getLogger(__name__)
 
+
 class RelatedEntity(MetadataModel):
+    """Model for entities related to projects."""
+
     def to_body_dict(self):
+        """Serialize to Agave's REST API payload JSON."""
         body_dict = super(RelatedEntity, self).to_body_dict()
         body_dict['_relatedFields'] = []
         for attrname, field in six.iteritems(self._meta._related_fields):
             body_dict['_relatedFields'].append(attrname)
         return body_dict
 
+    def to_datacite_json(self):
+        """Serialize object to datacite JSON.
+
+        Every entity subclassing this class should add a `attributes['types']['resourceType']`
+        e.g. ``attributes['types']['resourceType'] = Experiment/{}.format(experiment.experiment_type``
+        as well as any specific subjects.
+        """
+        attributes = {}
+        authors = [author for author in getattr(self, 'authors', [])
+                   if author.get('authorship', False)]
+        authors = sorted(authors, key=lambda x: x['order'])
+        creators_details, institutions = _process_authors(authors)
+        attributes['creators'] = creators_details
+        attributes['contributors'] = [
+            {
+                'contributorType': 'HostingInstitution',
+                'nameType': 'Organizational',
+                'name': institution,
+            } for institution in institutions
+        ]
+        attributes['titles'] = [
+            {'title': self.title}
+        ]
+        attributes['publisher'] = 'Designsafe-CI'
+        utc_now = datetime.datetime.utcnow()
+        attributes['publicationYear'] = utc_now.year
+        attributes['types'] = {}
+        attributes['types']['resourceTypeGeneral'] = 'Dataset'
+        attributes['descriptions'] = [
+            {
+                'descriptionType': 'Abstract',
+                'description': self.description,
+                'lang': 'en-Us',
+            }
+        ]
+        attributes['language'] = 'English'
+        entities = []
+        for attrname in self._meta._reverse_fields:
+            field = getattr(self, attrname, False)
+            if not field:
+                continue
+            entities += field(self._meta.agave_client)
+        attributes['subjects'] = [
+            {'subject': entity.title} for entity in entities
+        ]
+        return attributes
+
 class Project(MetadataModel):
     model_name = 'designsafe.project'
     team_members = fields.ListField('Team Members')
+    guest_members = fields.ListField('Guest Members')
     co_pis = fields.ListField('Co PIs')
-    project_type = fields.CharField('Project Type', max_length=255, default='other')
+    project_type = fields.CharField('Project Type', max_length=255, default=None)
+    data_type = fields.CharField('Data Type', max_length=255, default='')
+    team_order = fields.ListField('Team Order')
     project_id = fields.CharField('Project Id')
     description = fields.CharField('Description', max_length=1024, default='')
     title = fields.CharField('Title', max_length=255, default='')
     pi = fields.CharField('PI', max_length=255)
-    award_number = fields.CharField('Award Number', max_length=255)
+    award_number = fields.ListField('Award Number')
+    award_numbers = fields.ListField('Award Numbers')
     associated_projects = fields.ListField('Associated Project')
-    ef = fields.CharField('Experimental Facility', max_length=512)
-    keywords = fields.CharField('Keywords')
+    ef = fields.CharField('Experimental Facility', max_length=512, default='')
+    keywords = fields.CharField('Keywords', default='')
+    file_tags = fields.ListField('File Tags')
+    dois = fields.ListField('Dois')
 
     @property
     def system(self):
@@ -55,9 +119,10 @@ class Project(MetadataModel):
 
     def add_pi(self, username):
         self._add_team_members_pems([username])
-        if len(self.pi) > 0:
-            self.team_members += self.pi
-            self.team_members = list(set(self.team_members))
+        # this may be where we are always adding the PI
+        # if len(self.pi) > 0:
+        #     self.team_members += [self.pi]
+        #     self.team_members = list(set(self.team_members))
         self.pi = username
         self.save(self.manager().agave_client)
         return self
@@ -66,8 +131,8 @@ class Project(MetadataModel):
         self._remove_team_members_pems([username])
         if len(self.co_pis):
             self.pi = self.co_pis[0]
-        elif len(self.team_members):
-            self.pi = self.team_members[0]
+        # elif len(self.team_members):
+        #     self.pi = self.team_members[0]
         self.save(self.manager().agave_client)
         return self
 
@@ -139,3 +204,311 @@ class Project(MetadataModel):
             limit=limit)
         ents = [lookup_model(rsp)(**rsp) for rsp in resp]
         return ents
+
+    def archive(self):
+        ARCHIVE_NAME = str(self.project_id) + '_archive.zip'
+        proj_dir = '/corral-repl/tacc/NHERI/projects/{}'.format(self.uuid)
+
+        def create_archive(project_directory):
+            try:
+                logger.debug("Creating new archive for %s" % project_directory)
+
+                # create archive within the project directory
+                archive_path = os.path.join(project_directory, ARCHIVE_NAME)
+                abs_path = project_directory.rsplit('/',1)[0]
+
+                
+
+                zf = zipfile.ZipFile(archive_path, mode='w', allowZip64=True)
+                for dirs, _, files in os.walk(project_directory):
+                    for f in files:
+                        if f == ARCHIVE_NAME:
+                            continue
+                        # write files without abs file path
+                        zf.write(os.path.join(dirs, f), os.path.join(dirs.replace(abs_path,''), f))
+                zf.close()
+            except:
+                logger.debug("Creating archive failed for " % 
+                    project_directory)
+
+        def update_archive(project_directory):
+            try:
+                logger.debug("Updating archive for %s" % project_directory)
+
+                archive_path = os.path.join(project_directory, ARCHIVE_NAME)
+                archive_timestamp = os.path.getmtime(archive_path)
+                zf = zipfile.ZipFile(archive_path, mode='a', allowZip64=True)
+                for dirs, _, files in os.walk(project_directory):
+                    for f in files:
+                        if f == ARCHIVE_NAME:
+                            continue
+                        file_path = os.path.join(dirs, f)
+                        file_timestamp = os.path.getmtime(file_path)
+                        if file_timestamp > archive_timestamp:
+                            if file_path in zf.namelist():
+                                zf.close()
+                                logger.debug(
+                                    "Modified file, deleting archive and " \
+                                    "re-archiving project directory %s" % 
+                                    project_directory)
+                                os.remove(archive_path)
+                                create_archive(project_directory)
+                                break
+            except:
+                logger.debug("Updating archive failed for project directory" % 
+                    project_directory)
+        
+        if ARCHIVE_NAME not in os.listdir(proj_dir):
+            create_archive(proj_dir)
+        else:
+            update_archive(proj_dir)
+
+    def to_dataset_json(self):
+        """
+        Serialize project to json for google dataset search
+        https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/BMNJPS
+        """
+
+        dataset_json = {
+            "@context": "http://schema.org",
+            "@type": "Dataset",
+            "@id": "",
+            "identifier": "",
+            "logo": "https://www.designsafe-ci.org/static/images/nsf-designsafe-logo.014999b259f6.png",
+            "name": self.title,
+            "creator": [
+                {
+                    "name": "",
+                    "affiliation": "",
+                    "@id": "",
+                    "identifier": ""
+                }
+            ],
+            "author": [
+                {
+                    "name": "",
+                    "affiliation": "",
+                    "@id": "",
+                    "identifier": ""
+                }
+            ],
+            "datePublished": self.created,
+            "dateModified": self.to_body_dict()['lastUpdated'],
+            "description": self.description,
+            "keywords": self.keywords.split(','),
+            "license": {
+                "@type": "Dataset",
+                "text": ""
+            },
+            "publisher": {
+                "@type": "Organization",
+                "name": "Designsafe-CI"
+            },
+            "provider": {
+                "@type": "Organization",
+                "name": "Designsafe-CI"
+            },
+            "includedInDataCatalog": {
+                "@type": "Organization",
+                "name": "Designsafe-CI",
+                "url": "https://designsafe-ci.org"
+            },
+        }
+        if self.dois:
+            dataset_json["distribution"] = {
+                    "@type": "DataDownload",
+                    "name": self.to_body_dict()['value']['projectId'] + "_archive.zip",
+                    "fileFormat": "application/zip",
+                    "contentSize": "",
+                    "@id": "",
+                    "identifier": ""
+            }
+
+        if self.dois:
+            dataset_json['@id'] = self.dois[0]
+            dataset_json['identifier'] = self.dois[0]
+        else:
+            related_ents = self.related_entities()
+            logger.debug(related_ents)
+        if getattr(self, 'team_order', False):
+            authors = sorted(self.team_order, key=lambda x: x['order'])
+        else:
+            authors = [{'name': username} for username in [self.pi] + self.co_pis]
+        dataset_json['creator'] = generate_creators(authors)
+        dataset_json['author'] = generate_creators(authors)
+        try:
+            pub = IndexedPublication.from_id(self.project_id)
+            dataset_json['license'] = pub.licenses.works
+        except (DocumentNotFound, AttributeError):
+            pass
+        try:
+            pub = IndexedPublicationLegacy.from_id(self.project_id)
+            dataset_json['license'] = pub.licenses.works
+        except DocumentNotFound:
+            pass
+
+        return dataset_json
+
+    def to_datacite_json(self):
+        """Serialize project to datacite json."""
+        attributes = {}
+        if getattr(self, 'team_order', False):
+            authors = sorted(self.team_order, key=lambda x: x['order'])
+        else:
+            authors = [{'name': username} for username in [self.pi] + self.co_pis]
+        creators_details, institutions = _process_authors(authors)
+        attributes['creators'] = creators_details
+        attributes['contributors'] = [
+            {
+                'contributorType': 'HostingInstitution',
+                'nameType': 'Organizational',
+                'name': institution,
+            } for institution in institutions
+        ]
+        attributes['titles'] = [
+            {'title': self.title}
+        ]
+        attributes['publisher'] = 'Designsafe-CI'
+        utc_now = datetime.datetime.utcnow()
+        attributes['publicationYear'] = utc_now.year
+        attributes['types'] = {}
+        attributes['types']['resourceType'] = 'Project/{}'.format(
+            self.project_type.title().replace('_', ' ')
+        )
+
+        if getattr(self, 'data_type', False):
+            attributes['types']['resourceType'] += '/{}'.format(self.data_type)
+
+        attributes['types']['resourceTypeGeneral'] = 'Dataset'
+        attributes['descriptions'] = [
+            {
+                'descriptionType': 'Abstract',
+                'description': self.description,
+                'lang': 'en-Us',
+            }
+        ]
+        attributes['subjects'] = [
+            {'subject': keyword} for keyword in self.keywords.split(',')
+        ]
+        attributes['dates'] = [{
+            'dateType': 'Accepted',
+            'date': '{}-{}-{}'.format(
+                utc_now.year,
+                utc_now.month,
+                utc_now.day
+            )
+        }]
+        attributes['language'] = 'English'
+        attributes['identifiers'] = [
+            {
+                'identifierType': 'Project ID',
+                'identifier': self.project_id,
+            }
+        ]
+        if len(self.award_number) and type(self.award_number[0]) is not dict:
+            self.award_number = [{'order': 0, 'name': ''.join(self.award_number)}]
+        awards = sorted(
+            self.award_number,
+            key=lambda x: (x.get('order', 0), x.get('name', ''))
+        )
+        attributes['identifiers'] += [
+            {
+                'identifierType': 'NSF Award Number',
+                'identifier': '{name} - {number}'.format(
+                    name=award['name'],
+                    number=award['number']
+                ),
+            } for award in awards
+            if award.get('name') and award.get('number')
+        ]
+        return attributes
+
+
+def generate_creators(authors):
+    creators_details = []
+    for author in authors:
+        user_obj = None
+        user_tas = None
+        user_orcid = None
+        if not author.get('guest'):
+            try:
+                user_obj = get_user_model().objects.get(username=author['name'])
+                user_orcid = user_obj.profile.orcid_id if user_obj.profile.orcid_id else None
+            except ObjectDoesNotExist:
+                pass
+
+        if user_obj:
+            user_tas = TASClient().get_user(username=user_obj.username)
+
+        if user_orcid:
+            details = {
+                '@id': user_orcid,
+                'identifier': user_orcid
+            }
+        else:
+            details = {}
+
+        if user_obj and user_tas:
+            author_name = "{} {}".format(user_obj.first_name, user_obj.last_name)
+            details.update({
+                'name': author_name,
+                "affiliation": user_tas['institution']
+            })
+            creators_details.append(details)
+        elif author.get('fname') and author.get('lname'):
+            author_name = "{} {}".format(author.get('fname'), author.get('lname'))
+            details.update({
+                'name': author_name,
+                "affiliation": getattr(author, 'inst', '')
+            })
+            creators_details.append(details)
+        return creators_details
+
+
+
+def _process_authors(authors):
+    """Process authors.
+
+    This function transforms the author's details into
+    an list of first name and last name and a list
+    of unique institutions. This is necessary to create
+    the JSON payload for the Datacite API.
+
+    .. warning:: Authors should be sorted when passed to this
+        function.
+
+    :param list[dict] authors: List of dict with author's details.
+        Each dictionary must have at least a ``'name'`` key with
+        the author's username.
+    """
+    creators_details = []
+    institutions = []
+    for author in authors:
+        user_obj = None
+        user_tas = None
+        if not author.get('guest'):
+            try:
+                user_obj = get_user_model().objects.get(username=author['name'])
+            except ObjectDoesNotExist:
+                pass
+
+        if user_obj:
+            user_tas = TASClient().get_user(username=user_obj.username)
+
+        if user_obj and user_tas:
+            creators_details.append({
+                'nameType': 'Personal',
+                'givenName': user_obj.first_name,
+                'familyName': user_obj.last_name,
+            })
+            institutions.append(user_tas['institution'])
+        elif author.get('fname') and author.get('lname'):
+            creators_details.append({
+                'nameType': 'Personal',
+                'givenName': author['fname'],
+                'familyName': author['lname'],
+            })
+            if 'inst' in author:
+                institutions.append(author['inst'])
+    institutions = set(institutions)
+    return creators_details, institutions

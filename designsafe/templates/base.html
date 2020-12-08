@@ -1,4 +1,4 @@
-{% load cms_tags staticfiles sekizai_tags menu_tags %}
+{% load cms_tags staticfiles sekizai_tags menu_tags recaptcha2 %}
 <!DOCTYPE html>
 <html>
   <head>
@@ -7,9 +7,16 @@
       <meta name="google-site-verification" content="GIow5qfMulVcOVKJqGss0mSkxwycFBzgCk2aouypsfo" />
       <title>{% block title %}{% page_attribute "page_title" %}{% endblock %} | DesignSafe-CI</title>
       <meta name="viewport" content="width=device-width">
-      <meta name="description" content="{{ site.description }}">
+      <meta name="description" content="{{description}}">
+
       <link rel="icon" href="{% static 'favicon.ico' %}">
-      <link rel="canonical" href="{{request.get_full_path}}">
+      {% if 'designsafe.storage.published' in request.get_full_path %}
+      <link rel="canonical" href="https://www.designsafe-ci.org/data/browser/public/designsafe.storage.published/{{projectId}}">
+      {% elif 'nees.public' in request.get_full_path %}
+      <link rel="canonical" href="https://www.designsafe-ci.org/data/browser/public/nees.public/{{neesId}}">
+      {% else %}
+      <link rel="canonical" href="https://www.designsafe-ci.org{{request.get_full_path}}">
+      {% endif %}
       {% block head_extra %}{% endblock %}
       <!-- styles -->
       <link href="{% static 'vendor/bootstrap-ds/css/bootstrap.css' %}" rel="stylesheet" type="text/css">
@@ -19,18 +26,46 @@
       <link href="{% static 'vendor/slick-carousel/slick/slick.css' %}" rel="stylesheet" type="text/css">
       <link href="{% static 'vendor/slick-carousel/slick/slick-theme.css' %}" rel="stylesheet" type="text/css">
       <link href="{% static 'styles/typekit.css' %}" rel="stylesheet" type="text/css">
-      <link href="{% static 'styles/main.css' %}" rel="stylesheet" type="text/css">
+      <!--<link href="{% static 'styles/main.css' %}" rel="stylesheet" type="text/css">
       <link href="{% static 'styles/corner-ribbon.css' %}" rel="stylesheet" type="text/css">
-      <link href="{% static 'styles/base.css' %}" rel="stylesheet" type="text/css">
+      <link href="{% static 'styles/base.css' %}" rel="stylesheet" type="text/css"> -->
+      <link href="{% static 'build/base.bundle.css' %}"rel="stylesheet" type="text/css">
       <link href="{% static 'vendor/angular-material/angular-material.css' %}" rel="stylesheet">
       <link href="{% static 'styles/ng-designsafe.css' %}" rel="stylesheet">
       {% block styles %}{% endblock %}
       {% render_block "css" %}
       <base href="/">
-  </head>
-  <body ng-app="designsafe">
-    {% cms_toolbar %}
+      {% recaptcha_init 'en' %}
 
+      <!-- used in general search -->
+      <meta name="keywords" content=""> <!-- related experiements, subject; used in search -->
+      <meta name="author" content=""> <!-- author names -->
+
+      <!-- used in google citation -->
+      {% block google_citation_meta %}
+      <meta name="citation_title" content=""> <!-- project title -->
+      <meta name="citation_author" content=""> <!-- author; can have multiple lines -->
+      <meta name="citation_author_institution" content=""> <!-- example: University of Texas at Austin-->
+      <meta name="citation_publication_date" content=""> <!-- year of publication -->
+      <meta name="citation_doi" content=""> <!-- project doi, example: 10.17603/DS28382 -->
+      <meta name="citation_keywords" content=""> <!-- project keywords -->
+      <meta name="citation_pdf_url" content=""> <!-- pdf url -->
+      <meta name="citation_abstract_html_url" content=""> <!-- project url -->
+      <meta name="citation_publisher" content="DesignSafe-CI">
+      <meta name="citation_language" content="en">
+      <meta name="identifier" content="">
+      <!--Dublin Core Metatags-->
+      <meta name="DC.identifier" content="">
+      <meta name="DC.publisher" content="DesignSafe-CI">
+      <meta name="DC.title" content="">
+      <meta name="DC.date" content="">
+      <meta name="DC.language" content="en">
+      <meta name="DC.creator" content="">
+      <meta name="DC.type" content="dataset">
+      {% endblock %}
+  </head>
+  <body ng-app="designsafe.portal">
+    {% cms_toolbar %}
     {% include 'includes/header.html' %}
     {% include 'includes/navigation.html' %}
 
@@ -43,86 +78,35 @@
     {% include 'includes/footer.html' %}
     <!-- scripts -->
     <script src="https://www.google.com/recaptcha/api.js"></script>
-    <script src="{% static 'vendor/underscore/underscore.js' %}"></script>
 
     <script src="{% static 'vendor/modernizr/modernizr.js' %}"></script>
-    <script src="{% static 'vendor/jquery/dist/jquery.js' %}"></script>
-    <script src="{% static 'vendor/bootstrap-ds/js/bootstrap.js' %}"></script>
+    <script src="{% static 'vendor/jquery/dist/jquery.min.js' %}"></script>
+    <script src="{% static 'vendor/bootstrap-ds/js/bootstrap.min.js' %}"></script>
     <script src="{% static 'vendor/bootstrap-datepicker/dist/js/bootstrap-datepicker.min.js' %}"></script>
-    <script src="{% static 'vendor/d3/d3.min.js' %}"></script>
+    <script src="{% static 'vendor/d3/dist/d3.min.js' %}"></script>
 
     <script src="{% static 'scripts/utils.js' %}"></script>
     <script src="{% static 'scripts/dateinput.js' %}"></script>
-    <script src="{% static 'scripts/navbar.js' %}"></script>
 
-    <script src="{% static 'vendor/angular/angular.js' %}"></script>
-    <script src="{% static 'vendor/angular-cookies/angular-cookies.min.js' %}"></script>
-    <script src="{% static 'vendor/tether/dist/js/tether.min.js' %}"></script>
-    <script src="{% static 'vendor/angular-bootstrap/ui-bootstrap.min.js' %}"></script>
-    <script src="{% static 'vendor/angular-sanitize/angular-sanitize.min.js' %}"></script>
-    <script src="{% static 'vendor/angular-toastr/dist/angular-toastr.tpls.min.js' %}"></script>
-    <script src="{% static 'vendor/angular-aria/angular-aria.min.js' %}"></script>
-    <script src="{% static 'vendor/angular-material/angular-material.min.js' %}"></script>
-    <script src="{% static 'vendor/angular-messages/angular-messages.min.js' %}"></script>
-    <script src="{% static 'vendor/angular-animate/angular-animate.min.js' %}"></script>
+    <script src="{% static 'vendor/angular/angular.min.js' %}"></script>
     <script type="text/javascript" src="{% static 'djng/js/django-angular.js' %}"></script>
-    <script type="text/javascript" src="{% static 'vendor/slick-carousel/slick/slick.min.js' %}"></script>
-    <script type="text/javascript" src="{% static 'vendor/angular-slick-carousel/dist/angular-slick.min.js' %}"></script>
-    <script type="text/javascript" src="{% static 'vendor/angular-cookies/angular-cookies.js' %}"></script>
-    <script type="text/javascript" src="{% static 'vendor/angular-bootstrap/ui-bootstrap.js' %}"></script>
+    <script src="{% static 'vendor/js-custom-select/js/customSelect.js' %}"></script>
 
     <script type="text/javascript" src="{% static 'scripts/ng-modernizr/ng-modernizr.js' %}"></script>
-
-    <script type="text/javascript" src="{% static 'scripts/ng-designsafe/ng-designsafe.js' %}"></script>
-    <script type="text/javascript" src="{% static 'scripts/ng-designsafe/directives/ng-designsafe-directives.js' %}"></script>
-    <script type="text/javascript" src="{% static 'scripts/ng-designsafe/filters/ng-designsafe-filters.js' %}"></script>
-    <script type="text/javascript" src="{% static 'scripts/ng-designsafe/services/logging-service.js' %}"></script>
-    <script type="text/javascript" src="{% static 'scripts/ng-designsafe/services/tickets-service.js' %}"></script>
-    <script type="text/javascript" src="{% static 'scripts/ng-designsafe/modules/ws-module.js' %}"></script>
-    <script type="text/javascript" src="{% static 'scripts/ng-designsafe/providers/ws-provider.js' %}"></script>
-    <script type="text/javascript" src="{% static 'scripts/ng-designsafe/modules/notifications-module.js' %}"></script>
-    <script type="text/javascript" src="{% static 'scripts/ng-designsafe/providers/notifications-provider.js' %}"></script>
-    <script type="text/javascript" src="{% static 'scripts/ng-designsafe/controllers/notifications.js' %}"></script>
+    <script type="text/javascript" src="{% static 'build/base.bundle.js' %}"></script>
 
     <script type="text/javascript" src="{% static 'scripts/logging/logger.js' %}"></script>
 
-    <script src="{% static 'vendor/angular-httpi/build/httpi.min.js' %}"></script>
+    <script src="{% static 'vendor/httpi/build/httpi.min.js' %}"></script>
+    <script src="{% static 'vendor/d3plus/d3plus.full.min.js' %}"></script>
 
     {% block scripts %}{% endblock %}
     {% render_block "js" %}
-
-        <!-- DATA BROWSER DIRECTIVES/SREVICES -->
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/directives/dd-listing.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/directives/dd-search-listing.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/directives/dd-shared-listing.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/directives/dd-public-listing.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/directives/dd-public-search-listing.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/directives/dd-box-listing.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/directives/dd-dropbox-listing.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/directives/dd-googledrive-listing.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/directives/dd-breadcrumb.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/directives/metadata-listing.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/directives/my-data-browser.js' %}"></script>
-        <!-- -->
-
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/filters/data-browser-filters.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/filters/ng-designsafe-filters.js' %}"></script>
-
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/services/data-service.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/services/user-service.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/services/logging-service.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/services/file-listing.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/services/data-browser-service.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/models/project.entity.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/models/project.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/services/project-entity-service.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/services/project-service.js' %}"></script>
-        <script type="text/javascript" src="{% static 'scripts/ng-designsafe/services/systems-service.js' %}"></script>
-
         <script type="text/javascript" src="{% static 'nbviewer/lib/nbv.js' %}"></script>
         <script type="text/javascript" src="{% static 'vendor/prismjs/prism.js' %}"></script>
-        <script type="text/javascript" src="{% static 'vendor/marked/lib/marked.js' %}"></script>
-		<!-- DATA BROWSER DIRECTIVES/SERVICES -->
+        <script type="text/javascript" src="{% static 'vendor/marked/marked.min.js' %}"></script>
+        <script src="{% static 'scripts/navbar.js' %}"></script>
+
 
     <script type="text/javascript">
         (function(angular) {
@@ -132,6 +116,22 @@
                 context: {{ angular_init|default:"{}"|safe }}
             });
         })(angular);
+
+        var userAgent = navigator.userAgent
+        if(!(userAgent.includes("Chrome") || userAgent.includes("Firefox") || userAgent.includes("FxiOS") || userAgent.includes("CriOS"))) {
+            $("#agentMessage").append("\
+                <div class='alert alert-warning'>\
+                    <button type='button' class='close' data-dismiss='alert' aria-label='Close'>\
+                        <span aria-hidden='true'>&times;</span>\
+                    </button>\
+                    <p><h4>Unsupported Browser</h4>\
+                        Your browser is not supported by DesignSafe.\
+                        Please switch to <a href='https://www.google.com/chrome'>Chrome</a>\
+                        or <a href='https://www.mozilla.org/en-US/firefox/new/'>Firefox</a>\
+                        if you experience issues.\
+                    </p>\
+                </div>")
+        }
     </script>
 
     {% include 'includes/analytics.html' %}

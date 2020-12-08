@@ -2,13 +2,16 @@ from django.test import TestCase, RequestFactory
 from django.conf import settings
 from django.contrib.auth import get_user_model
 
-from designsafe.apps.api.projects.models import ExperimentalProject, ModelConfig, FileModel
+from designsafe.apps.projects.models.agave.experimental import ExperimentalProject, ModelConfig, FileModel
 
 from agavepy.agave import Agave
 import mock
 import json
 
 import logging
+import pytest
+
+pytestmark = pytest.mark.django_db
 
 logger = logging.getLogger(__name__)
 

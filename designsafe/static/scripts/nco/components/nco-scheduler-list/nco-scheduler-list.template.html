@@ -1,0 +1,17 @@
+<div class="nco-scheduler-list">
+    <div data-ng-if="$ctrl.events==[]">Error: No events found</div>
+    <table>
+        <tr>
+            <th>Begin Date</th>
+            <th>End Date</th>
+            <th>Title (PRJ)</th>
+            <th>Description</th>
+        </tr>
+        <tr data-ng-repeat="event in $ctrl.events">
+            <td class="date-start">{{event.dateStart|date:"M/d/y h:mm a"}}</td>
+            <td class="date-end">{{event.dateEnd|date:"M/d/y h:mm a"}}</td>
+            <td class="event-title-prj">{{event.eventTitle}} ({{event.projectId}})</td>
+            <td class="event-desc">{{event.eventDesc}}</td>
+        </tr>
+    </table>
+</div>

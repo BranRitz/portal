@@ -31,7 +31,7 @@ class NEESUser(object):
                 cursor.execute(cls._lookup_sql, [email])
                 columns = [col[0] for col in cursor.description]
                 return [
-                    cls(**dict(zip(columns, row)))
+                    cls(**dict(list(zip(columns, row))))
                     for row in cursor.fetchall()
                 ]
             finally:
@@ -44,14 +44,19 @@ class NEESUser(object):
 class DesignSafeProfileNHInterests(models.Model):
     description = models.CharField(max_length=300)
 
-    def __unicode__(self):
+    def __str__(self):
         return self.description
 
+class DesignSafeProfileNHTechnicalDomains(models.Model):
+    description = models.CharField(max_length=300)
+
+    def __str__(self):
+        return self.description
 
 class DesignSafeProfileResearchActivities(models.Model):
     description = models.CharField(max_length=300)
 
-    def __unicode__(self):
+    def __str__(self):
         return self.description
 
 
@@ -59,12 +64,17 @@ class DesignSafeProfile(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, related_name='profile')
     ethnicity = models.CharField(max_length=255)
     gender = models.CharField(max_length=255)
+    agree_to_account_limit = models.DateTimeField(auto_now_add=True, null=True)
     bio = models.CharField(max_length=4096, default=None, null=True, blank=True)
     website = models.CharField(max_length=256, default=None, null=True, blank=True)
     orcid_id = models.CharField(max_length=256, default=None, null=True, blank=True)
     nh_interests = models.ManyToManyField(DesignSafeProfileNHInterests)
+    nh_interests_primary = models.ForeignKey(DesignSafeProfileNHInterests, related_name='nh_interests_primary', null=True)
+    nh_technical_domains = models.ManyToManyField(DesignSafeProfileNHTechnicalDomains)
     professional_level = models.CharField(max_length=256, default=None, null=True)
     research_activities = models.ManyToManyField(DesignSafeProfileResearchActivities)
+    update_required = models.BooleanField(default=True)
+    last_updated = models.DateTimeField(auto_now=True, null=True)
 
     def send_mail(self, subject, body=None):
         send_mail(subject,
@@ -72,6 +82,7 @@ class DesignSafeProfile(models.Model):
                   settings.DEFAULT_FROM_EMAIL,
                   [self.user.email],
                   html_message=body)
+
 
 class NotificationPreferences(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL,

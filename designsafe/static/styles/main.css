@@ -80,6 +80,10 @@ body.navbar-fixed {
   padding-bottom: 1em;
 }
 
+.site-banner-left {
+  width:55%;
+}
+
 .site-banner-right {
   flex-grow: 2;
   display: flex;
@@ -248,6 +252,11 @@ h4 {
 .headline {
   position: relative;
   margin-bottom: 20px;
+}
+
+#headline-data-depot {
+  font-size:28px;
+  margin-top:16px;
 }
 
 .headline::after {
@@ -482,6 +491,9 @@ label.required:after,
     margin-left: -2px;
 }
 
+.btn-toolbar > .btn-group-data-depot-toolbar {
+  margin-left:0px;
+}
 
 .callout {
   padding: 1em;
@@ -618,7 +630,7 @@ table td {
   display: block;
 }
 
-.dropdown.open .dropdown-menu {
+.dropdown.open .dropdown-menu.notifications{
   top:140%;
   padding: 5px 0 0 0;
 }
@@ -712,6 +724,20 @@ table td {
   margin: 0 auto;
 }
 
+.clear-notifs {
+  cursor: pointer;
+  padding: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  color:#337ab7;
+  margin: 0;
+}
+
+.clear-notifs:hover {
+  background:#f7f7f7;
+}
+
 @media (max-width: 767px) {
   .notifications {
     left: -6.5em;
@@ -737,6 +763,14 @@ table td {
 md-toast {
   padding: 0 !important;
   margin: 8px;
+}
+
+#toast-container md-toast .custom-toast {
+  display: block;
+}
+
+#toast-container md-toast .custom-toast::before {
+  display: none;
 }
 
 md-toast.ng-leave {
@@ -772,13 +806,13 @@ li .popover.right {
 }
 
 .workspace-tab {
-  width: calc((100% - 20px)/5);
+  width: calc((100% - 20px)/6);
 }
 
 #workspace-tabs a h3 {
     color: #FFFFFF;
     display: inline-block;
-    margin: auto;
+    margin: auto auto auto -.7em;
     vertical-align: middle;
     line-height: normal;
     font-size: 2vw;
@@ -832,7 +866,7 @@ li .popover.right {
   position:absolute;
   z-index: 1;
   top: -.1em;
-  right: -.5em;  
+  right: -.5em;
   bottom: 0;
   width: 3em;
   background: #303030;

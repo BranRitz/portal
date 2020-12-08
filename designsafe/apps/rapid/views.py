@@ -1,7 +1,7 @@
 import uuid
 import os
 import json
-import StringIO
+import io
 from datetime import datetime
 from PIL import Image
 from elasticsearch import TransportError, ConnectionTimeout
@@ -24,7 +24,7 @@ from designsafe import settings
 def thumbnail_image(fobj, size=(400, 400)):
     im = Image.open(fobj)
     im.thumbnail( (400, 400), Image.ANTIALIAS)
-    file_buffer = StringIO.StringIO()
+    file_buffer = io.StringIO()
     im.save(file_buffer, format='JPEG')
     return file_buffer
 
@@ -63,14 +63,9 @@ def get_event_types(request):
 
 def get_events(request):
     s = RapidNHEvent.search()
-    try:
-        results = s.sort("-event_date").execute(ignore_cache=True)
-    except (TransportError, ConnectionTimeout) as err:
-        if getattr(err, 'status_code', 500) == 404:
-            raise
-        results = s.sort("-event_date").execute(ignore_cache=True)
-
-    out = [h.to_dict() for h in results.hits]
+    s = s.sort("-event_date")
+    total = s.count()
+    out = [h.to_dict() for h in s[0:total]]
     return JsonResponse(out, safe=False)
 
 
@@ -86,16 +81,9 @@ def admin(request):
                  })
 
     s = RapidNHEvent.search()
-    try:
-        results = s.execute(ignore_cache=True)
-    except (TransportError, ConnectionTimeout) as err:
-        if getattr(err, 'status_code', 500) == 404:
-            raise
-        results = s.execute(ignore_cache=True)
-
-
-
-
+    s = s.sort("-event_date")
+    total = s.count()
+    results = [h for h in s[0:total]]
     context = {}
     context["rapid_events"] = results
     return render(request, 'designsafe/apps/rapid/admin.html', context)
@@ -377,7 +365,6 @@ def admin_user_permissions(request):
         }
 
     """
-
     metrics_logger.info('Rapid Admin user perms',
                  extra = {
                      'user': request.user.username,

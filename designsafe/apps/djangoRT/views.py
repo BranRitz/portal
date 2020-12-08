@@ -46,8 +46,7 @@ def ticketdetail(request, ticketId):
 
     for history in ticket_history:
         # remove bogus "untitled" attachments
-        history['Attachments'] = filter(lambda a: not a[1].startswith('untitled ('),
-                                        history['Attachments'])
+        history['Attachments'] = [a for a in history['Attachments'] if not a[1].startswith('untitled (')]
 
     return render(request, 'djangoRT/ticketDetail.html', {
         'ticket': ticket,
@@ -92,7 +91,7 @@ def ticketcreate(request):
             )
 
             ticket = rtModels.Ticket(subject=form.cleaned_data['subject'],
-                                     problem_description=ticket_body,
+                                     problem_description="\n  ".join(ticket_body.splitlines()),
                                      requestor=form.cleaned_data['email'],
                                      cc=form.cleaned_data.get('cc', ''))
 

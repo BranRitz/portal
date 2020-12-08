@@ -35,10 +35,11 @@ Adjusting these settings for the CMS is handled in ``designsafe.urls``
 from django.contrib import sitemaps
 from django.contrib.sites.models import Site
 from django.urls import reverse
-from designsafe.apps.api.agave.filemanager.public_search_index import PublicElasticFileManager as pefm
+from designsafe.apps.api.publications.operations import listing as list_publications, neeslisting as list_nees
+from designsafe.apps.api.agave import get_service_account_client
 
 # imported urlpatterns from apps
-import urls     # from designsafe import urls not working?
+from designsafe import urls  # from designsafe import urls not working?
 from designsafe.apps.accounts import urls as accounts_urls
 from designsafe.apps.api import urls as api_urls
 from designsafe.apps.data import urls as data_urls
@@ -52,12 +53,17 @@ from designsafe.apps.dashboard import urls as dashboard_urls
 from designsafe.apps.box_integration import urls as box_integration_urls
 from designsafe.apps.dropbox_integration import urls as dropbox_integration_urls
 from designsafe.apps.googledrive_integration import urls as googledrive_integration_urls
+from cms.sitemaps import CMSSitemap
 
 # Home
 class HomeSitemap(sitemaps.Sitemap):
     priority = 1.0
     changefreq = 'weekly'
 
+    def get_urls(self, site=None, **kwargs):
+        site = Site(domain='www.designsafe-ci.org')
+        return super(HomeSitemap, self).get_urls(site=site, **kwargs)
+    
     def items(self):
         return ['']
 
@@ -88,6 +94,10 @@ class SubSitemap(sitemaps.Sitemap):
 class StaticViewSitemap(sitemaps.Sitemap):
     priority = 0.7
     changefreq = 'weekly'
+
+    def get_urls(self, site=None, **kwargs):
+        site = Site(domain='www.designsafe-ci.org')
+        return super(StaticViewSitemap, self).get_urls(site=site, **kwargs)
 
     def items(self):
 
@@ -126,6 +136,10 @@ class DynamicViewSitemap(sitemaps.Sitemap):
     priority = 0.8
     changefreq = 'weekly'
 
+    def get_urls(self, site=None, **kwargs):
+        site = Site(domain='www.designsafe-ci.org')
+        return super(DynamicViewSitemap, self).get_urls(site=site, **kwargs)
+
     def items(self):
 
         names_list = []
@@ -149,27 +163,56 @@ class ProjectSitemap(sitemaps.Sitemap):
     priority = 0.6
     changefreq = 'weekly'
 
-    def items(self):
+    def get_urls(self, site=None, **kwargs):
+        site = Site(domain='www.designsafe-ci.org')
+        return super(ProjectSitemap, self).get_urls(site=site, **kwargs)
 
+    def items(self):
+        client = get_service_account_client()
         projPath = []
 
         # pefm - PublicElasticFileManager to grab public projects
         count = 0
         while True:
-            count += 200
-            projects = pefm().listing('nees.public', '/', 0, count).to_dict()
-            if len(projects['children']) < count:
+            projects = list_publications(offset=count, limit=200, limit_fields=False)
+            for proj in projects['listing']:
+                subpath = {
+                    'root' : reverse('designsafe_data:data_depot'),
+                    'project' : proj['project']['value']['projectId'],
+                    'system' : 'designsafe.storage.published'
+                }
+                projPath.append('{root}public/{system}/{project}'.format(**subpath))
+            if len(projects['listing']) < 200:
                 break
+            count += 200
 
-        for proj in projects['children']:
-            subpath = {
-                'root' : reverse('designsafe_data:data_depot'),
-                'project' : proj['project'],
-                'system' : proj['system']
-            }
-            projPath.append('{root}public/{system}/{project}'.format(**subpath))
+        count = 0
+        while True:
+            projects = list_nees(offset=count, limit=200, limit_fields=False)
+            for proj in projects['listing']:
+                # nees projects
+                subpath = {
+                    'root' : reverse('designsafe_data:data_depot'),
+                    'project' : proj['path'],
+                    'system' : proj['system']
+                }
+                projPath.append('{root}public/{system}{project}'.format(**subpath))
+            if len(projects['listing']) < 200:
+                break
+            count += 200
 
         return projPath
 
     def location(self, item):
         return item
+
+
+class DesignSafeCMSSitemap(CMSSitemap):
+    priority = .7
+    changefreq = 'weekly'
+
+    def get_urls(self, site=None, **kwargs):
+        site = Site(domain='www.designsafe-ci.org')
+        return super(DesignSafeCMSSitemap, self).get_urls(site=site, **kwargs)
+
+

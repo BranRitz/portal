@@ -4,18 +4,22 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.urlresolvers import reverse
+from django.core.exceptions import ObjectDoesNotExist
 from django.http import HttpResponse
 from designsafe.apps.api.notifications.models import Notification
 from designsafe.apps.workspace.tasks import JobSubmitError, submit_job
 from designsafe.apps.licenses.models import LICENSE_TYPES, get_license_info
 from designsafe.libs.common.decorators import profile as profile_fn
+from designsafe.apps.api.tasks import index_or_update_project
+from designsafe.apps.workspace import utils as WorkspaceUtils
+from designsafe.apps.workspace.models.app_descriptions import AppDescription
 from requests import HTTPError
-from urlparse import urlparse
+from urllib.parse import urlparse
 from datetime import datetime
 import json
 import six
 import logging
-import urllib
+import urllib.request, urllib.parse, urllib.error
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +45,14 @@ def call_api(request, service):
             app_id = request.GET.get('app_id')
             if app_id:
                 data = agave.apps.get(appId=app_id)
+                data['exec_sys'] = agave.systems.get(systemId=data['executionSystem'])
                 lic_type = _app_license_type(app_id)
                 data['license'] = {
                     'type': lic_type
                 }
                 if lic_type is not None:
                     _, license_models = get_license_info()
-                    license_model = filter(lambda x: x.license_type == lic_type, license_models)[0]
+                    license_model = [x for x in license_models if x.license_type == lic_type][0]
                     lic = license_model.objects.filter(user=request.user).first()
                     data['license']['enabled'] = lic is not None
 
@@ -75,7 +80,7 @@ def call_api(request, service):
                     }
                     if lic_type is not None:
                         _, license_models = get_license_info()
-                        license_model = filter(lambda x: x.license_type == lic_type, license_models)[0]
+                        license_model = [x for x in license_models if x.license_type == lic_type][0]
                         lic = license_model.objects.filter(user=request.user).first()
                         data['license']['enabled'] = lic is not None
 
@@ -89,6 +94,7 @@ def call_api(request, service):
                 if meta_uuid:
                     del meta_post['uuid']
                     data = agave.meta.updateMetadata(uuid=meta_uuid, body=meta_post)
+                    index_or_update_project.apply_async(args=[meta_uuid], queue='api')
                 else:
                     data = agave.meta.addMetadata(body=meta_post)
             elif request.method == 'DELETE':
@@ -104,6 +110,7 @@ def call_api(request, service):
                 data = agave.jobs.delete(jobId=job_id)
             elif request.method == 'POST':
                 job_post = json.loads(request.body)
+                logger.debug(job_post)
                 job_id = job_post.get('job_id')
 
                 # cancel job / stop job
@@ -140,19 +147,51 @@ def call_api(request, service):
                     lic_type = _app_license_type(job_post['appId'])
                     if lic_type is not None:
                         _, license_models = get_license_info()
-                        license_model = filter(lambda x: x.license_type == lic_type, license_models)[0]
+                        license_model = [x for x in license_models if x.license_type == lic_type][0]
                         lic = license_model.objects.filter(user=request.user).first()
                         job_post['parameters']['_license'] = lic.license_as_str()
 
                     # url encode inputs
                     if job_post['inputs']:
                         for key, value in six.iteritems(job_post['inputs']):
-                            parsed = urlparse(value)
-                            if parsed.scheme:
-                                job_post['inputs'][key] = '{}://{}{}'.format(
-                                    parsed.scheme, parsed.netloc, urllib.quote(parsed.path))
+                            if type(value) == list:
+                                inputs = []
+                                for val in value:
+                                    parsed = urlparse(val)
+                                    if parsed.scheme:
+                                        inputs.append('{}://{}{}'.format(
+                                            parsed.scheme, parsed.netloc, urllib.parse.quote(parsed.path)))
+                                    else:
+                                        inputs.append(urllib.parse.quote(parsed.path))
+                                job_post['inputs'][key] = inputs
                             else:
-                                job_post['inputs'][key] = urllib.quote(parsed.path)
+                                parsed = urlparse(value)
+                                if parsed.scheme:
+                                    job_post['inputs'][key] = '{}://{}{}'.format(
+                                        parsed.scheme, parsed.netloc, urllib.parse.quote(parsed.path))
+                                else:
+                                    job_post['inputs'][key] = urllib.parse.quote(parsed.path)
+
+                    if settings.DEBUG:
+                        wh_base_url = settings.WEBHOOK_POST_URL.strip('/') + '/webhooks/'
+                        jobs_wh_url = settings.WEBHOOK_POST_URL + reverse('designsafe_api:jobs_wh_handler')
+                    else:
+                        wh_base_url = request.build_absolute_uri('/webhooks/')
+                        jobs_wh_url = request.build_absolute_uri(reverse('designsafe_api:jobs_wh_handler'))
+
+                    job_post['parameters']['_webhook_base_url'] = wh_base_url
+
+                    # Remove any params from job_post that are not in appDef
+                    for param, _ in list(job_post['parameters'].items()):
+                        if not any(p['id'] == param for p in job_post['appDefinition']['parameters']):
+                            del job_post['parameters'][param]
+
+                    del job_post['appDefinition']
+
+                    job_post['notifications'] = [
+                        {'url': jobs_wh_url,
+                        'event': e}
+                        for e in ["PENDING", "QUEUED", "SUBMITTING", "PROCESSING_INPUTS", "STAGED", "RUNNING", "KILLED", "FAILED", "STOPPED", "FINISHED", "BLOCKED"]]
 
                     try:
                         data = submit_job(request, request.user.username, job_post)
@@ -193,24 +232,44 @@ def call_api(request, service):
             else:
                 return HttpResponse('Unexpected service: %s' % service, status=400)
 
+        elif service == 'ipynb':
+            put = json.loads(request.body)
+            dir_path = put.get('file_path')
+            system = put.get('system')
+            data = WorkspaceUtils.setup_identity_file(
+                request.user.username,
+                agave,
+                system,
+                dir_path
+            )
+        elif service == 'description':
+            app_id = request.GET.get('app_id')
+            try:
+                data = AppDescription.objects.get(appId=app_id).desc_to_dict()
+            except ObjectDoesNotExist:
+                return HttpResponse('No description found for {}'.format(app_id), status=200)
         else:
             return HttpResponse('Unexpected service: %s' % service, status=400)
     except HTTPError as e:
-        logger.error('Failed to execute {0} API call due to HTTPError={1}'.format(
-            service, e.message))
-        return HttpResponse(json.dumps(e.message),
+        logger.exception(
+            'Failed to execute %s API call due to HTTPError=%s\n%s',
+            service,
+            e,
+            e.response.content
+        )
+        return HttpResponse(json.dumps(e),
                             content_type='application/json',
                             status=400)
     except AgaveException as e:
-        logger.error('Failed to execute {0} API call due to AgaveException={1}'.format(
-            service, e.message))
-        return HttpResponse(json.dumps(e.message), content_type='application/json',
+        logger.exception('Failed to execute {0} API call due to AgaveException={1}'.format(
+            service, e))
+        return HttpResponse(json.dumps(e), content_type='application/json',
                             status=400)
     except Exception as e:
-        logger.error('Failed to execute {0} API call due to Exception={1}'.format(
+        logger.exception('Failed to execute {0} API call due to Exception={1}'.format(
             service, e))
         return HttpResponse(
-            json.dumps({'status': 'error', 'message': '{}'.format(e.message)}),
+            json.dumps({'status': 'error', 'message': '{}'.format(e)}),
             content_type='application/json', status=400)
 
     return HttpResponse(json.dumps(data, cls=DjangoJSONEncoder),

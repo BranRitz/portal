@@ -5,11 +5,17 @@ from django.core.urlresolvers import reverse
 from django.core.exceptions import ObjectDoesNotExist
 from django.http import HttpResponseRedirect, HttpResponseBadRequest
 from django.shortcuts import render
+import secrets
+
 from .models import AgaveOAuthToken, AgaveServiceStatus
+from agavepy.agave import Agave
+from designsafe.apps.auth.tasks import check_or_create_agave_home_dir, new_user_alert
 import logging
 import os
 import requests
 import time
+from requests import HTTPError
+
 
 
 logger = logging.getLogger(__name__)
@@ -30,27 +36,30 @@ def login_options(request):
         agave_status = AgaveServiceStatus()
         ds_oauth_svc_id = getattr(settings, 'AGAVE_DESIGNSAFE_OAUTH_STATUS_ID',
                                   '56bb6d92a216b873280008fd')
-        designsafe_status = (s for s in agave_status.status
-                             if s['id'] == ds_oauth_svc_id).next()
+        designsafe_status = next((s for s in agave_status.status
+                             if s['id'] == ds_oauth_svc_id))
         if designsafe_status and 'status_code' in designsafe_status:
             if designsafe_status['status_code'] == 400:
                 message = {
                     'class': 'warning',
-                    'text': 'DesignSafe API Services are experiencing a Partial Service '
-                            'Disruption. Some services may be unavailable.'
+                    'text': 'DesignSafe API Services are experiencing a '
+                            'Partial Service Disruption. Some services '
+                            'may be unavailable.'
                 }
             elif designsafe_status['status_code'] == 500:
                 message = {
                     'class': 'danger',
-                    'text': 'DesignSafe API Services are experiencing a Service Disruption. '
-                            'Some services may be unavailable.'
+                    'text': 'DesignSafe API Services are experiencing a '
+                            'Service Disruption. Some services may be '
+                            'unavailable.'
                 }
     except Exception as e:
-        logger.warn('Unable to check AgaveServiceStatus: %s', e.message)
+        logger.warn('Unable to check AgaveServiceStatus')
+        logger.warn(e)
         agave_status = None
         designsafe_status = None
 
-    if(message==False):
+    if not message:
         return agave_oauth(request)
     else:
         context = {
@@ -66,7 +75,7 @@ def agave_oauth(request):
     client_key = getattr(settings, 'AGAVE_CLIENT_KEY')
 
     session = request.session
-    session['auth_state'] = os.urandom(24).encode('hex')
+    session['auth_state'] = secrets.token_hex(24)
     next_page = request.GET.get('next')
     if next_page:
         session['next'] = next_page
@@ -76,10 +85,17 @@ def agave_oauth(request):
         protocol = 'https'
     else:
         protocol = 'http'
-    redirect_uri = '{}://{}{}'.format(protocol, request.get_host(),
-                                      reverse('designsafe_auth:agave_oauth_callback'))
+    redirect_uri = '{}://{}{}'.format(
+        protocol,
+        request.get_host(),
+        reverse('designsafe_auth:agave_oauth_callback')
+    )
     authorization_url = (
-        '%s/authorize?client_id=%s&response_type=code&redirect_uri=%s&state=%s' % (
+        '%s/authorize?'
+        'client_id=%s&'
+        'response_type=code&'
+        'redirect_uri=%s&'
+        'state=%s' % (
             tenant_base_url,
             client_key,
             redirect_uri,
@@ -94,23 +110,31 @@ def agave_oauth_callback(request):
     http://agaveapi.co/documentation/authorization-guide/#authorization_code_flow
     """
     state = request.GET.get('state')
-
+    
     if request.session['auth_state'] != state:
-        msg = ('OAuth Authorization State mismatch!? auth_state=%s '
-               'does not match returned state=%s' % (request.session['auth_state'], state))
+        msg = (
+            'OAuth Authorization State mismatch!? auth_state=%s '
+            'does not match returned state=%s' % (
+                request.session['auth_state'], state
+            )
+        )
         logger.warning(msg)
         return HttpResponseBadRequest('Authorization State Failed')
 
     if 'code' in request.GET:
         # obtain a token for the user
         # Check for HTTP_X_DJANGO_PROXY custom header
-        django_proxy = request.META.get('HTTP_X_DJANGO_PROXY', 'false') == 'true'
+        request.META.get('HTTP_X_DJANGO_PROXY', 'false') == 'true'
+        django_proxy = request.META.get('HTTP_X_DJANGO_PROXY', 'false')
         if django_proxy or request.is_secure():
             protocol = 'https'
         else:
             protocol = 'http'
-        redirect_uri = '{}://{}{}'.format(protocol, request.get_host(),
-                                          reverse('designsafe_auth:agave_oauth_callback'))
+        redirect_uri = '{}://{}{}'.format(
+            protocol,
+            request.get_host(),
+            reverse('designsafe_auth:agave_oauth_callback')
+        )
         code = request.GET['code']
         tenant_base_url = getattr(settings, 'AGAVE_TENANT_BASEURL')
         client_key = getattr(settings, 'AGAVE_CLIENT_KEY')
@@ -128,6 +152,7 @@ def agave_oauth_callback(request):
         token_data['created'] = int(time.time())
         # log user in
         user = authenticate(backend='agave', token=token_data['access_token'])
+        
         if user:
             try:
                 token = user.agave_oauth
@@ -135,14 +160,20 @@ def agave_oauth_callback(request):
             except ObjectDoesNotExist:
                 token = AgaveOAuthToken(**token_data)
                 token.user = user
+                new_user_alert.apply_async(args=(user.username,))
             token.save()
 
             login(request, user)
-            if user.last_login is not None:
-                msg_tmpl = 'Login successful. Welcome back, %s %s!'
-            else:
-                msg_tmpl = 'Login successful. Welcome to DesignSafe, %s %s!'
-            messages.success(request, msg_tmpl % (user.first_name, user.last_name))
+
+            ag = Agave(api_server=settings.AGAVE_TENANT_BASEURL,
+                       token=settings.AGAVE_SUPER_TOKEN)
+            try:
+                ag.files.list(systemId=settings.AGAVE_STORAGE_SYSTEM,
+                              filePath=user.username)
+            except HTTPError as e:
+                if e.response.status_code == 404:
+                    check_or_create_agave_home_dir.apply_async(args=(user.username,),queue='files')
+                    
         else:
             messages.error(
                 request,
@@ -154,19 +185,18 @@ def agave_oauth_callback(request):
         if 'error' in request.GET:
             error = request.GET['error']
             logger.warning('Authorization failed: %s' % error)
-
         messages.error(
             request, 'Authentication failed! Did you forget your password? '
                      '<a href="%s">Click here</a> to reset your password.' %
                      reverse('designsafe_accounts:password_reset'))
         return HttpResponseRedirect(reverse('designsafe_auth:login'))
-
     if 'next' in request.session:
         next_uri = request.session.pop('next')
         return HttpResponseRedirect(next_uri)
     else:
         # return HttpResponseRedirect(settings.LOGIN_REDIRECT_URL)
         return HttpResponseRedirect(reverse('designsafe_dashboard:index'))
+
 
 def agave_session_error(request):
     return render(request, 'designsafe/apps/auth/agave_session_error.html')

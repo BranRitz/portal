@@ -1,6 +1,3 @@
-(function(window, angular) {
-  "use strict";
-
   window.__DEBUG__ = window.__DEBUG__ || true;
 
   /**
@@ -19,8 +16,9 @@
    *
    * @constructor
    */
-  function LoggingServiceProvider() {
+  export function LoggingServiceProvider() {
     this.$get = function($http, djangoUrl) {
+        'ngInject';
 
       var _logLevels = {
         "DEBUG": 0,
@@ -108,6 +106,4 @@
     };
   }
 
-  angular.module('designsafe').provider('Logging', LoggingServiceProvider);
 
-})(window, angular);

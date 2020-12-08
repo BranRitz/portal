@@ -3,7 +3,7 @@
   "main": [
     "bootstrap-ui-codemirror.min.js"
   ],
-  "version": "0.2.2",
+  "version": "0.2.1",
   "authors": [
     "Philipp Bosch <hello@pb.io>",
     "NetworkNT",

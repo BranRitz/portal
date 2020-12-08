@@ -1,8 +1,6 @@
 import json
 import logging
 
-from designsafe.apps.api.data import lookup_file_manager
-from designsafe.apps.api.data.sources import SourcesApi
 from designsafe.apps.api.exceptions import ApiException
 from designsafe.apps.notifications.views import get_number_unread_notifications
 from django.conf import settings
@@ -15,18 +13,20 @@ from django.views.generic.base import TemplateView, View
 from django.views.decorators.csrf import ensure_csrf_cookie
 from designsafe.libs.common.decorators import profile
 
+from designsafe.libs.elasticsearch.docs.publications import BaseESPublication
+from designsafe.libs.elasticsearch.docs.publication_legacy import BaseESPublicationLegacy
+
+from designsafe.apps.projects.managers.base import ProjectsManager
+from designsafe.apps.api.agave import service_account
+import json
+
 logger = logging.getLogger(__name__)
-
-
-
 
 class  BasePublicTemplate(TemplateView):
     def get_context_data(self, **kwargs):
         context = super(BasePublicTemplate, self).get_context_data(**kwargs)
         context['unreadNotifications'] = 0
         return context
-
-
 
 
 class DataDepotView(BasePublicTemplate):
@@ -52,7 +52,8 @@ class DataDepotView(BasePublicTemplate):
 
     def get_context_data(self, **kwargs):
         context = super(DataDepotView, self).get_context_data(**kwargs)
-        
+        logger.info('Get context Data')
+
         if self.request.user.is_authenticated:
             context['angular_init'] = json.dumps({
                 'authenticated': True,
@@ -82,6 +83,7 @@ class DataBrowserTestView(BasePublicTemplate):
 
     def get_context_data(self, **kwargs):
         context = super(DataBrowserTestView, self).get_context_data(**kwargs)
+        logger.info('Get context Data')
 
         context['unreadNotifications'] = get_number_unread_notifications(self.request)
 
@@ -144,6 +146,7 @@ class DataBrowserTestView(BasePublicTemplate):
         })
         return context
 
+
 class FileMediaView(View):
     systems_mappings = {
         'designsafe.storage.default': 'shared',
@@ -165,7 +168,7 @@ class FileMediaView(View):
         if file_mgr_name not in ['public', 'community'] and \
             not request.user.is_authenticated:
             raise Http404('Resource not Found')
-        
+
         filename = file_path.rsplit('/', 1)[1]
         filepath = '{corral}/{sys_dirname}/{file_path}'.format(
             corral=self.corral, sys_dirname=self.get_system_dirname(system_id),
@@ -174,3 +177,121 @@ class FileMediaView(View):
         response['Content-Disposition'] = 'attachment; filename={filename}'.format(filename=filename)
         response['X-Accel-Redirect'] = '/internal-resource/{filepath}'.format(filepath=filepath)
         return response
+
+
+class DataDepotPublishedView(TemplateView):
+    """Data Depot view for published projects.
+
+    This view will be used when a user goes directly to a published project.
+    """
+    template_name = 'data/data_depot.html'
+
+    @method_decorator(ensure_csrf_cookie)
+    def dispatch(self, request, *args, **kwargs):
+        return super(DataDepotPublishedView, self).dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        """
+        Update context data to add publication.
+        """
+        context = super(DataDepotPublishedView, self).get_context_data(**kwargs)
+        logger.info('Get context Data')
+        pub = BaseESPublication(project_id=kwargs['project_id'].strip('/'))
+        logger.debug('pub: %s', pub.to_dict())
+        context['projectId'] = pub.projectId
+        context['citation_title'] = pub.project.value.title
+        context['citation_date'] = pub.created
+        if pub.project.value.to_dict().get('dois') != None: #This is for newer publications
+            context['doi'] = pub.project.value.dois[0]
+        elif pub.project.to_dict().get('doi') != None: #This is for older publications
+            context['doi'] = pub.project.doi
+        context['keywords'] = pub.project.value.keywords.split(',')
+        if 'users' in pub.to_dict():
+            context['authors'] = [{
+                'full_name': '{last_name}, {first_name}'.format(
+                    last_name=user['last_name'], first_name=user['first_name']
+                ),
+                'institution': getattr(getattr(user, 'profile', ''), 'institution', '')
+            } for user in getattr(pub, 'users', [])]
+        elif 'authors' in pub.to_dict():
+            context['authors'] = [{
+                'full_name': '{last_name}, {first_name}'.format(
+                    last_name=author['lname'], first_name=author['fname']
+                ),
+                'institution': getattr(author, 'inst', '')
+            } for author in getattr(pub, 'authors',[])]
+        else:
+            context['authors'] = [{
+                'full_name': '{last_name}, {first_name}'.format(
+                    last_name=author['lname'], first_name=author['fname']
+                ),
+                'institution': getattr(author, 'inst', '')
+            } for author in getattr(pub.project.value, 'teamOrder', [])]
+        context['publication'] = pub
+        context['description'] = pub.project.value.description
+        context['experiments'] = getattr(pub, 'experimentsList', [])
+        context['missions'] = getattr(pub, 'missions', [])
+        context['reports'] = getattr(pub, 'reports', [])
+        context['simulations'] = getattr(pub, 'simulations', [])
+        context['hybrid_simulations'] = getattr(pub, 'hybrid_simulations',[])
+
+        proj = ProjectsManager(service_account()).get_project_by_id(pub.projectId)
+        context['dc_json'] = json.dumps(proj.to_dataset_json())
+
+        if self.request.user.is_authenticated:
+            context['angular_init'] = json.dumps({
+                'authenticated': True,
+            })
+        else:
+            context['angular_init'] = json.dumps({
+                'authenticated': False,
+            })
+        return context
+
+
+class DataDepotLegacyPublishedView(TemplateView):
+    """Data Depot view for published projects.
+
+    This view will be used when a user goes directly to a legacy published project.
+    """
+    template_name = 'data/data_depot.html'
+
+    @method_decorator(ensure_csrf_cookie)
+    def dispatch(self, request, *args, **kwargs):
+        return super(DataDepotLegacyPublishedView, self).dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        """Update context data to add publication."""
+        context = super(DataDepotLegacyPublishedView, self).get_context_data(**kwargs)
+        logger.info('Get context Data')
+        nees_id = kwargs['project_id'].strip('.groups').strip('/')
+        logger.debug('nees_id: %s', nees_id)
+        pub = BaseESPublicationLegacy(nees_id=nees_id)
+        logger.debug('pub: %s', pub.to_dict())
+        context['neesId'] = nees_id.split('/')[0]
+        context['citation_title'] = pub.title
+        context['citation_date'] = getattr(pub, 'startDate', '')
+        experiments = getattr(pub, 'experiments')
+        if experiments and len(experiments):
+            context['doi'] = getattr(pub.experiments[0], 'doi', '')
+            exp_users = [getattr(exp, 'creators', []) for exp in experiments]
+            users  = [user for users in exp_users for user in users]
+            context['authors'] = [{
+                'full_name': '{last_name}, {first_name}'.format(
+                    last_name=getattr(user, 'lastName', ''),
+                    first_name=getattr(user, 'firstName', ''),
+                ),
+                'institution': ''
+            } for user in users]
+        context['publication'] = pub
+        context['description'] = pub.description
+
+        if self.request.user.is_authenticated:
+            context['angular_init'] = json.dumps({
+                'authenticated': True,
+            })
+        else:
+            context['angular_init'] = json.dumps({
+                'authenticated': False,
+            })
+        return context

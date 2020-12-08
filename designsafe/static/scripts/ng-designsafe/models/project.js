@@ -1,9 +1,6 @@
-(function(window, angular, $, _) {
-  "use strict";
-
-  var module = angular.module('designsafe');
-
-  module.factory('ProjectModel', ['Logging', function(Logging) {
+import _ from 'underscore';
+export function ProjectModel(Logging) {
+    'ngInject';
     var logger = Logging.getLogger('ngDesignSafe.ProjetModel');
     var Project = function(data){
       var self = this;
@@ -239,5 +236,4 @@
     };
 
     return Project;
-  }]);
-})(window, angular, jQuery, _);
+  }

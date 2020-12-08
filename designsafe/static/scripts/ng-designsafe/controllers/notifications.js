@@ -1,55 +1,29 @@
 /**
- * Created by mrhanlon on 4/28/16.
+ * Notification Badge Controller
+ * @function
+ * @param {Object} $rootScope
+ * @param {Object} $scope
+ * @param {Object} $filter
+ * @param {Object} djangoUrl
+ * @param {Object} Logging
+ * @param {Object} Django
+ * @param {Object} NotificationService
+ * @param {Object} $http
+ * @param {Object} logger
  */
-(function(window, angular, $) {
-  "use strict";
-
-  var app = angular.module('designsafe');
-  app.requires.push(
-    'ngCookies',
-    'djng.urls',  //TODO: djng
-    'ui.bootstrap',
-    'ds.notifications',
-    'django.context',
-    'toastr',
-    'ds.wsBus',
-    'logging',
-    'ngMaterial'
-  );
-
-  app.config(['WSBusServiceProvider', '$httpProvider', 'toastrConfig',
-    function config(WSBusServiceProvider, $httpProvider, toastrConfig) {
-      /*
-       * https://github.com/Foxandxss/angular-toastr#toastr-customization
-       */
-      angular.extend(toastrConfig, {
-        positionClass: 'toast-bottom-left',
-        timeOut: 20000
-      });
-
-      WSBusServiceProvider.setUrl(
-        (window.location.protocol === 'https:' ? 'wss://' : 'ws://') +
-        window.location.hostname +
-        (window.location.port ? ':' + window.location.port : '') +
-        '/ws/websockets?subscribe-broadcast&subscribe-user'
-      );
-    }
-  ]);
-
-  app.run(['WSBusService', 'logger',
-                function init(WSBusService, logger){
-    WSBusService.init(WSBusService.url);
-  }]);
-  app.run(['NotificationService', 'logger',
-                function init(NotificationService, logger){
-    NotificationService.init();
-  }]);
-
-  app.controller('NotificationBadgeCtrl',
-    ['$rootScope', '$scope', '$filter', 'djangoUrl', 'Logging', 'Django', 'NotificationService', '$http', 'logger',
-    function($rootScope, $scope, $filter, djangoUrl, Logging, Django, NotificationService, $http, logger) {
-
-      NotificationService.processors.notifs = {
+export function NotificationBadgeCtrl(
+    $rootScope,
+    $scope,
+    $filter,
+    djangoUrl,
+    Logging,
+    Django,
+    NotificationService,
+    $http,
+    logger
+) {
+    'ngInject';
+     NotificationService.processors.notifs = {
         'process': function notifyProcessor(msg){
           if (angular.element('#notification-container').hasClass('open')) {
             $scope.list();
@@ -102,6 +76,4 @@
           $rootScope.$on('notifications:delete', function() { $scope.list(); });
       };
       $scope.init();
-    }]);
-
-})(window, angular, jQuery);
+    }

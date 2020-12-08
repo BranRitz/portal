@@ -17,15 +17,16 @@ from designsafe.apps.api.projects.views import (ProjectListingView,
                                                 ProjectCollaboratorsView,
                                                 ProjectInstanceView,
                                                 ProjectMetaView,
-                                                PublicationView)
-from designsafe.apps.api.projects.managers.yamz import YamzBaseView
+                                                ProjectNotificationView,
+                                                PublicationView,
+                                                NeesPublicationView)
 
 urlpatterns = [
-    url(r'^$', ProjectCollectionView.as_view(), name='index'),
-
-    url(r'^yamz/(?P<term_id>[a-zA-Z0-9]+)/?$', YamzBaseView.as_view(), name='yamz'),
+    url(r'^/?$', ProjectCollectionView.as_view(), name='index'),
 
     url(r'^publication/((?P<project_id>[a-zA-Z0-9\-\_\.]+)/?)?', PublicationView.as_view(), name='publication'),
+
+    url(r'^nees-publication/((?P<nees_id>[a-zA-Z0-9\-\_\.]+)/?)?', NeesPublicationView.as_view(), name='nees-publication'),
 
     url(r'^listing/(?P<username>[a-zA-Z0-9\-_\.]+)/?$', ProjectListingView.as_view(), name='listing'),
 
@@ -60,4 +61,7 @@ urlpatterns = [
 
     url(r'^(?P<project_id>[a-z0-9\-]+)/data/(?P<file_path>.*)/$',
         ProjectDataView.as_view(), name='project_data'),
+
+    url(r'^(?P<project_uuid>[a-z0-9\-]+)/notification/$',
+        ProjectNotificationView.as_view(), name='project_notification'),
 ]

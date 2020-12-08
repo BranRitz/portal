@@ -1,7 +1,6 @@
 from django.test import TestCase
 from django.core.urlresolvers import reverse
 from django.contrib.auth import get_user_model, signals
-from designsafe.apps.auth.signals import on_user_logged_in
 from unittest import skip
 import mock
 import requests_mock
@@ -26,44 +25,44 @@ class AnonymousViewTests(TestCase):
         requested_url = reverse('djangoRT:mytickets')
         resp = self.client.get(requested_url)
         expected_redirect = reverse('login') + '?next=' + requested_url
-        self.assertRedirects(resp, expected_redirect)
+        self.assertRedirects(resp, expected_redirect, target_status_code=302)
 
     def test_detail(self):
         requested_url = reverse('djangoRT:ticketdetail', args=[999])
         resp = self.client.get(requested_url)
         expected_redirect = reverse('login') + '?next=' + requested_url
-        self.assertRedirects(resp, expected_redirect)
+        self.assertRedirects(resp, expected_redirect, target_status_code=302)
 
     def test_create(self):
         resp = self.client.get(reverse('djangoRT:ticketcreate'))
-        self.assertEquals(resp.status_code, 200)
+        self.assertEqual(resp.status_code, 200)
 
     def test_create_with_error_context(self):
         query = 'error_page=/page/that/failed&http_referer=https://www.google.com'
         resp = self.client.get(reverse('djangoRT:ticketcreate') + '?' + query)
 
         self.assertContains(resp, '<input id="id_error_page" name="error_page" '
-                                  'type="hidden" value="/page/that/failed" />')
+                                  'type="hidden" value="/page/that/failed" />', html=True)
         self.assertContains(resp, '<input id="id_http_referer" name="http_referer" '
-                                  'type="hidden" value="https://www.google.com" />')
+                                  'type="hidden" value="https://www.google.com" />', html=True)
 
     def test_reply(self):
         requested_url = reverse('djangoRT:ticketreply', args=[999])
         resp = self.client.get(requested_url)
         expected_redirect = reverse('login') + '?next=' + requested_url
-        self.assertRedirects(resp, expected_redirect)
+        self.assertRedirects(resp, expected_redirect, target_status_code=302)
 
     def test_close(self):
         requested_url = reverse('djangoRT:ticketclose', args=[999])
         resp = self.client.get(requested_url)
         expected_redirect = reverse('login') + '?next=' + requested_url
-        self.assertRedirects(resp, expected_redirect)
+        self.assertRedirects(resp, expected_redirect, target_status_code=302)
 
     def test_attachment(self):
         requested_url = reverse('djangoRT:ticketattachment', args=[999, 1001])
         resp = self.client.get(requested_url)
         expected_redirect = reverse('login') + '?next=' + requested_url
-        self.assertRedirects(resp, expected_redirect)
+        self.assertRedirects(resp, expected_redirect, target_status_code=302)
 
 
 class AuthenticatedViewTests(TestCase):
@@ -77,7 +76,6 @@ class AuthenticatedViewTests(TestCase):
         user.save()
 
         # disconnect user_logged_in signal
-        signals.user_logged_in.disconnect(on_user_logged_in)
 
     def test_index(self):
         """
@@ -161,9 +159,9 @@ class AuthenticatedViewTests(TestCase):
 
         self.assertNotContains(resp, 'Captcha')
         self.assertContains(resp, '<input id="id_error_page" name="error_page" '
-                                  'type="hidden" value="/page/that/failed" />')
+                                  'type="hidden" value="/page/that/failed" />', html=True)
         self.assertContains(resp, '<input id="id_http_referer" name="http_referer" '
-                                  'type="hidden" value="https://www.google.com" />')
+                                  'type="hidden" value="https://www.google.com" />', html=True)
 
     @requests_mock.Mocker()
     def test_reply(self, req_mock):

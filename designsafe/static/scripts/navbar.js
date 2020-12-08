@@ -22,9 +22,10 @@
   // }
 
   $('#search_button').on('keypress click', function (ev) {
+    ev.preventDefault();
     var searchstring = $('#searchfield').val();
     if (ev.which === 13 || ev.type === 'click') {
-      window.location = '/search?q=' + searchstring;
+      window.location = '/search?type_filter=all&query_string=' + searchstring;
     }
   });
 
@@ -85,7 +86,7 @@
     };
 
     $(document).on('scroll', window.throttle(activateSection, 100));
-    activateSection();
+    //activateSection();
   }
 
 })(window, jQuery);
